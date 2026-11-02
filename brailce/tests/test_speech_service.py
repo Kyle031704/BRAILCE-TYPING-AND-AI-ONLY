@@ -107,7 +107,7 @@ class TestSpeechServiceCore:
         speech_service.speak_character("C")
         speech_service.speak_character("Z")
 
-        assert char_engine.spoken_items == ["A.", "Bee.", "See.", "Zee."]
+        assert char_engine.spoken_items == ["A.", "B.", "C.", "Z."]
 
     def test_case_2_letter_name_pronunciation_mapping(self) -> None:
         """Case 2: Correct letter-name pronunciation mapping for all letters A-Z."""
@@ -280,7 +280,7 @@ class TestSpeechServiceCore:
         speech_service.speak_character("T")
 
         # Each character sent to character engine with rapid feedback
-        assert char_engine.spoken_items == ["See.", "A.", "Tee."]
+        assert char_engine.spoken_items == ["C.", "A.", "T."]
         # Ensure whole sentence was not announced on character presses
         assert "cat" not in [x.lower() for x in text_engine.spoken_items]
 
@@ -289,10 +289,10 @@ class TestSpeechServiceCore:
     ) -> None:
         """Case 16: Preserving stopping and replaying functionality."""
         speech_service.speak_character("B")
-        assert speech_service.last_utterance == "Bee."
+        assert speech_service.last_utterance == "B."
 
         speech_service.replay_last_utterance()
-        assert char_engine.spoken_items == ["Bee.", "Bee."]
+        assert char_engine.spoken_items == ["B.", "B."]
 
         speech_service.stop()
         assert char_engine.stopped is True

@@ -19,7 +19,9 @@ import sys
 import threading
 from typing import Optional
 
+from brailce.speech.audio_device import AudioDeviceCoordinator
 from brailce.speech.base import SpeechEngine
+from brailce.speech.normalizer import normalize_for_espeak_character, is_keystroke_feedback
 
 logger = logging.getLogger(__name__)
 
@@ -117,11 +119,11 @@ class EspeakEngine(SpeechEngine):
 
     def __init__(
         self,
-        voice: str = "en-us",
-        rate: int = 155,
+        voice: str = "en-us+m3",
+        rate: int = 165,
         volume: int = 100,
-        pitch: int = 50,
-        word_gap: int = 10,
+        pitch: int = 52,
+        word_gap: int = 5,
         max_queue_size: int = 50,
     ) -> None:
         self._voice = voice
@@ -172,6 +174,7 @@ class EspeakEngine(SpeechEngine):
             except queue.Empty:
                 break
 
+        AudioDeviceCoordinator.interrupt_active("espeak")
         with self._lock:
             if self._current_process and self._current_process.poll() is None:
                 try:
@@ -358,6 +361,7 @@ class EspeakEngine(SpeechEngine):
                                 stderr=subprocess.DEVNULL,
                             )
                             self._current_process = aplay_proc
+                        AudioDeviceCoordinator.register_process(aplay_proc, "espeak")
                         try:
                             aplay_proc.communicate(input=full_wav, timeout=30)
                         except subprocess.TimeoutExpired:
@@ -365,6 +369,7 @@ class EspeakEngine(SpeechEngine):
                         finally:
                             with self._lock:
                                 self._current_process = None
+                            AudioDeviceCoordinator.unregister_process(aplay_proc)
                 return
             except subprocess.TimeoutExpired:
                 return

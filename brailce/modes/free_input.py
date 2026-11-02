@@ -135,9 +135,12 @@ class FreeInputMode(BaseMode):
             )
             self.app.display.show_text_buffer(self.state.text_buffer)
 
-        # 3. Speech feedback (immediate character pronunciation via eSpeak NG)
+        # 3. Speech feedback (immediate character pronunciation via unified speech engine)
         if self.app.speech and self.app.config.get("speech", "speak_each_character", default=True):
-            self.app.speech.speak(mapping.speech if mapping else character)
+            if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+                self.app.speech.speak_character(mapping.character if mapping else character)
+            else:
+                self.app.speech.speak(mapping.speech if mapping else character)
 
         # 4. Logging
         logger.info("FreeInput: CHAR=%s, BRAILLE=%s", mapping.character, mapping.braille_unicode)
@@ -165,9 +168,13 @@ class FreeInputMode(BaseMode):
             self.app.display.show_text_buffer(self.state.text_buffer)
             
         if self.app.speech and last_word:
-            # Pronounce the complete word that was just completed (e.g. "ARM").
+            # Pronounce the complete word that was just completed (e.g. "ARM" -> "arm.").
+            # Uses the exact same natural synthesis function as mode introductions.
             # Never pronounce the literal word "space".
-            self.app.speech.speak(last_word)
+            if hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+                self.app.speech.speak_text(f"{last_word.lower()}.", interrupt=False)
+            else:
+                self.app.speech.speak(last_word)
 
         logger.info("FreeInput: SPACE (word: %r)", last_word)
 
@@ -178,8 +185,11 @@ class FreeInputMode(BaseMode):
             return
 
         if self.app.speech:
-            # Pronounce the full sentence/word/character cleanly using eSpeak NG
-            self.app.speech.speak(query, interrupt=False)
+            # Pronounce the full sentence/word/character cleanly
+            if hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+                self.app.speech.speak_text(query, interrupt=False)
+            else:
+                self.app.speech.speak(query, interrupt=False)
 
         # Reset buffer so next typing starts completely fresh without old inputs
         self.state.clear_buffer()

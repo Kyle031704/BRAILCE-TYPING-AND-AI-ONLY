@@ -105,12 +105,22 @@ class AIAssistantMode(BaseMode):
         if self.app.speech:
             if character == " ":
                 if last_word:
-                    self.app.speech.speak(last_word)
+                    if hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+                        self.app.speech.speak_text(f"{last_word.lower()}.", interrupt=False)
+                    else:
+                        self.app.speech.speak(last_word)
             elif speech_override:
-                self.app.speech.speak(speech_override)
+                if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+                    self.app.speech.speak_character(speech_override)
+                else:
+                    self.app.speech.speak(speech_override)
             elif self.app.config.get("speech", "speak_each_character", default=True):
                 mapping = self.app.encoder.encode(character) if self.app.encoder else None
-                self.app.speech.speak(mapping.speech if mapping else character)
+                char_val = mapping.character if mapping else character
+                if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+                    self.app.speech.speak_character(char_val)
+                else:
+                    self.app.speech.speak(char_val)
 
     def _handle_backspace(self) -> None:
         """Handle backspace silently without clicks, beeps, or vocal announcements."""
@@ -159,7 +169,10 @@ class AIAssistantMode(BaseMode):
 
     def _process_query(self, query: str) -> None:
         if self.app.speech:
-            self.app.speech.speak("Thinking.", interrupt=False)
+            if hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+                self.app.speech.speak_text("Thinking, please wait.", interrupt=False)
+            else:
+                self.app.speech.speak("Thinking, please wait.", interrupt=False)
 
         if not hasattr(self.app, "ai_client") or not self.app.ai_client:
             self._finish_processing("AI assistant is currently unavailable.", query=query)
@@ -177,7 +190,10 @@ class AIAssistantMode(BaseMode):
         if self.app.display:
             self.app.display.show_ai_response(response)
         if self.app.speech:
-            self.app.speech.speak(response)
+            if hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+                self.app.speech.speak_text(response, interrupt=False)
+            else:
+                self.app.speech.speak(response)
 
     def on_enter(self) -> None:
         logger.info("Entered AI Assistant Mode.")

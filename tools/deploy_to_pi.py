@@ -29,6 +29,8 @@ FILES_TO_DEPLOY = [
     "brailce/speech/service.py",
     "brailce/speech/espeak_engine.py",
     "brailce/speech/piper_engine.py",
+    "brailce/speech/normalizer.py",
+    "brailce/speech/audio_device.py",
     "brailce/speech/__init__.py",
     "brailce/speech/base.py",
     # Core & Modes
@@ -50,6 +52,7 @@ FILES_TO_DEPLOY = [
     "brailce/braille/mappings/punctuation.json",
     # Tests
     "brailce/tests/test_speech_service.py",
+    "brailce/tests/test_normalizer.py",
 ]
 
 
@@ -85,6 +88,19 @@ def deploy():
 
         print(f"  Uploading: {rel} -> {rem}")
         sftp.put(loc, rem)
+
+    # Sync pre-cached Piper character WAV audio files
+    char_cache_dir = os.path.join(LOCAL_BASE, "brailce", "audio", "characters")
+    if os.path.isdir(char_cache_dir):
+        rem_char_dir = f"{REMOTE_BASE}/brailce/audio/characters"
+        ssh.exec_command(f"mkdir -p '{rem_char_dir}'")
+        wav_files = [f for f in os.listdir(char_cache_dir) if f.endswith(".wav")]
+        print(f"\n--- Syncing {len(wav_files)} Pre-Cached Piper Character Audio WAV Files ---")
+        for f in wav_files:
+            loc_wav = os.path.join(char_cache_dir, f)
+            rem_wav = f"{rem_char_dir}/{f}"
+            sftp.put(loc_wav, rem_wav)
+        print("Pre-cached character WAV files synced successfully!")
 
     sftp.close()
     print("All files synchronized successfully!")

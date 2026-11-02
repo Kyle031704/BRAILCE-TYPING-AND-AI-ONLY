@@ -25,38 +25,44 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 from brailce.speech.base import SpeechEngine
 from brailce.speech.espeak_engine import EspeakEngine, clean_speech_text
+from brailce.speech.normalizer import (
+    is_keystroke_feedback,
+    normalize_for_espeak_character,
+    normalize_for_piper,
+)
 from brailce.speech.piper_engine import PiperEngine
 
 logger = logging.getLogger(__name__)
 
 # Standard Grade 1 Letter Names (with period for falling, definitive pitch)
+# No artificial phonetic respellings (like "Bee", "See", "Aitch") to ensure natural American prosody
 LETTER_NAME_MAP: Dict[str, str] = {
     "A": "A.",
-    "B": "Bee.",
-    "C": "See.",
-    "D": "Dee.",
-    "E": "Ee.",
-    "F": "Eff.",
-    "G": "Jee.",
-    "H": "Aitch.",
-    "I": "Eye.",
-    "J": "Jay.",
-    "K": "Kay.",
-    "L": "Ell.",
-    "M": "Em.",
-    "N": "En.",
-    "O": "Oh.",
-    "P": "Pee.",
-    "Q": "Cue.",
-    "R": "Ar.",
-    "S": "Ess.",
-    "T": "Tee.",
-    "U": "You.",
-    "V": "Vee.",
-    "W": "Double you.",
-    "X": "Ex.",
-    "Y": "Why.",
-    "Z": "Zee.",
+    "B": "B.",
+    "C": "C.",
+    "D": "D.",
+    "E": "E.",
+    "F": "F.",
+    "G": "G.",
+    "H": "H.",
+    "I": "I.",
+    "J": "J.",
+    "K": "K.",
+    "L": "L.",
+    "M": "M.",
+    "N": "N.",
+    "O": "O.",
+    "P": "P.",
+    "Q": "Q.",
+    "R": "R.",
+    "S": "S.",
+    "T": "T.",
+    "U": "U.",
+    "V": "V.",
+    "W": "W.",
+    "X": "X.",
+    "Y": "Y.",
+    "Z": "Z.",
 }
 
 DIGIT_NAME_MAP: Dict[str, str] = {
@@ -244,19 +250,21 @@ class SpeechService(SpeechEngine):
         if not char_clean:
             return
 
-        char_upper = char_clean.upper()
+        char_upper = char_clean.upper().rstrip(".")
 
-        # Resolve explicit pronunciation mapping
-        if char_upper in LETTER_NAME_MAP:
-            spoken_text = LETTER_NAME_MAP[char_upper]
-        elif char_clean in DIGIT_NAME_MAP:
-            spoken_text = DIGIT_NAME_MAP[char_clean]
-        elif char_clean in MATH_SYMBOL_MAP:
-            spoken_text = MATH_SYMBOL_MAP[char_clean]
-        elif char_clean in PUNCTUATION_NAME_MAP:
-            spoken_text = PUNCTUATION_NAME_MAP[char_clean]
-        else:
-            spoken_text = f"{char_clean}."
+        # Resolve explicit pronunciation mapping via normalizer or tables
+        spoken_text = normalize_for_espeak_character(char_clean)
+        if not spoken_text:
+            if char_upper in LETTER_NAME_MAP:
+                spoken_text = LETTER_NAME_MAP[char_upper]
+            elif char_clean in DIGIT_NAME_MAP:
+                spoken_text = DIGIT_NAME_MAP[char_clean]
+            elif char_clean in MATH_SYMBOL_MAP:
+                spoken_text = MATH_SYMBOL_MAP[char_clean]
+            elif char_clean in PUNCTUATION_NAME_MAP:
+                spoken_text = PUNCTUATION_NAME_MAP[char_clean]
+            else:
+                spoken_text = f"{char_clean}."
 
         self._record_utterance("character", spoken_text, {"character": character})
 
@@ -361,24 +369,22 @@ class SpeechService(SpeechEngine):
     def speak(self, text: str, interrupt: Optional[bool] = None) -> None:
         """
         Backward-compatible speak interface.
-        Single characters are routed to speak_character;
-        words and sentences are routed to speak_text.
+        Individual keystrokes are routed to speak_character (eSpeak NG);
+        words and sentences are routed to speak_text (Piper TTS).
         """
         if not text:
             return
 
         trimmed = text.strip()
-        # Single character or character name lookup
-        if len(trimmed) == 1:
+        if not trimmed:
+            return
+
+        # Check if text is a single keystroke (character, digit, operator, or letter name like "Bee")
+        if is_keystroke_feedback(trimmed):
             self.speak_character(trimmed)
             return
 
-        upper_check = trimmed.upper()
-        if upper_check in LETTER_NAME_MAP and len(upper_check) == 1:
-            self.speak_character(upper_check)
-            return
-
-        # Whole words and sentences
+        # Whole words and sentences -> Piper Neural TTS
         self.speak_text(text, interrupt=bool(interrupt))
 
     def _record_utterance(self, kind: str, text: str, kwargs: Dict[str, Any]) -> None:
@@ -392,19 +398,19 @@ class SpeechService(SpeechEngine):
     def from_config(cls, config: Any) -> "SpeechService":
         """
         Build SpeechService according to application configuration and environment.
-        All modes share the exact same centralized eSpeak NG engine and speech queue.
+        Uses eSpeak NG for zero-latency keystroke feedback and Piper for natural words/sentences.
         """
         speech_cfg = config.section("speech") if hasattr(config, "section") else {}
 
         behavior = os.getenv("SPEECH_BEHAVIOR", speech_cfg.get("behavior", "character_and_word")).lower()
-        voice = speech_cfg.get("voice", "en-us")
-        rate = int(speech_cfg.get("rate", 155))
+        voice = speech_cfg.get("voice", "en-us+m3")
+        rate = int(speech_cfg.get("rate", 165))
         volume = int(speech_cfg.get("volume", 100))
-        pitch = int(speech_cfg.get("pitch", 50))
-        word_gap = int(speech_cfg.get("word_gap_ms", 10))
+        pitch = int(speech_cfg.get("pitch", 52))
+        word_gap = int(speech_cfg.get("word_gap_ms", 5))
         max_queue = int(speech_cfg.get("max_queue_size", 50))
 
-        # Instantiate unified, single eSpeak NG engine for all modes
+        # 1. Zero-latency eSpeak NG engine for keystroke announcements
         espeak = EspeakEngine(
             voice=voice,
             rate=rate,
@@ -414,11 +420,32 @@ class SpeechService(SpeechEngine):
             max_queue_size=max_queue,
         )
 
-        logger.info("SpeechService initialized with centralized eSpeak NG engine (voice: %s, rate: %d).", voice, rate)
+        # 2. Piper Neural TTS for natural full words, sentences, math, and AI responses
+        piper = PiperEngine(
+            rate=rate,
+            volume=volume,
+            max_queue_size=max_queue,
+        )
+
+        # Unify ALL speech under Piper Neural TTS (Ryan) when available.
+        # Single characters use pre-cached Piper WAVs for zero-latency,
+        # while completed words, sentences, math, and AI use the neural model.
+        if piper.is_available():
+            char_engine = piper
+            text_engine = piper
+            logger.info("SpeechService initialized: Unified ALL speech under Piper Neural TTS (Ryan) with pre-cached keystrokes.")
+        else:
+            char_engine = espeak
+            text_engine = espeak
+            logger.info(
+                "SpeechService initialized: CharEngine=%s, TextEngine=%s (Piper available: False, using eSpeak fallback)",
+                espeak.engine_name,
+                espeak.engine_name,
+            )
 
         return cls(
-            character_engine=espeak,
-            text_engine=espeak,
+            character_engine=char_engine,
+            text_engine=text_engine,
             behavior=behavior,
             voice=voice,
             rate=rate,

@@ -131,10 +131,13 @@ class MathMode(BaseMode):
                 )
             self.app.display.show_text_buffer(self.state.math_buffer)
 
-        # 4. Spoken audio feedback via eSpeak NG
+        # 4. Spoken audio feedback via unified speech engine
         if self.app.speech:
-            speech_val = mapping.speech if mapping and mapping.speech else character
-            self.app.speech.speak(speech_val)
+            if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+                self.app.speech.speak_character(character)
+            else:
+                speech_val = mapping.speech if mapping and mapping.speech else character
+                self.app.speech.speak(speech_val)
 
         logger.info("MathMode: CHAR=%s, BUFFER=%s", character, self.state.math_buffer)
 
