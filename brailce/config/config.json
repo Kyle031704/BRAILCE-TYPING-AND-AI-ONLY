@@ -1,0 +1,83 @@
+{
+    "system": {
+        "simulation_mode": true,
+        "debug": false,
+        "log_level": "INFO"
+    },
+
+    "input": {
+        "device": "keyboard"
+    },
+
+    "braille": {
+        "mapping_files": [
+            "brailce/braille/mappings/letters.json",
+            "brailce/braille/mappings/numbers.json",
+            "brailce/braille/mappings/punctuation.json",
+            "brailce/braille/mappings/math.json"
+        ],
+        "load_nemeth": false
+    },
+
+    "speech": {
+        "enabled": true,
+        "engine": "espeak",
+        "character_engine": "espeak",
+        "text_engine": "espeak",
+        "behavior": "character_and_word",
+        "voice": "en-us",
+        "rate": 145,
+        "pitch": 50,
+        "volume": 100,
+        "word_gap_ms": 8,
+        "speak_each_character": true,
+        "speak_words": true,
+        "speak_control_events": false,
+        "max_queue_size": 50
+    },
+
+    "sound": {
+        "enabled": false,
+        "volume": 0
+    },
+
+    "display": {
+        "driver": "auto",
+        "show_braille_unicode": true,
+        "show_braille_dots": true,
+        "show_braille_visual": true
+    },
+
+    "ai": {
+        "enabled": true,
+        "host": "http://127.0.0.1:11434",
+        "model": "liquidai/lfm2.5-1.2b-instruct",
+        "timeout_seconds": 15,
+        "max_response_tokens": 35,
+        "temperature": 0.5,
+        "system_prompt": "You are Brailce, a friendly and clear educational voice assistant for a Grade 1 Braille learning device. Rules: 1. If greeted (like 'hello', 'hi', or 'okay'), reply with a short friendly greeting under 10 words. 2. Answer learning questions simply in 1 or 2 short sentences for elementary children. 3. Answer math directly. 4. Never give emotional therapy advice. 5. Keep answers under 25 words with no markdown or bullet points."
+    },
+
+    "logging": {
+        "enabled": true,
+        "log_directory": "logs",
+        "csv_filename_prefix": "brailce_session",
+        "log_characters": true,
+        "log_mode_changes": true,
+        "log_ai_interactions": true,
+        "log_errors": true,
+        "record_timing": true
+    },
+
+    "power": {
+        "driver": "simulated"
+    },
+    
+    "vision": {
+        "driver": "auto",
+        "model_path": "brailce/vision/yolov8_braille.pt",
+        "confidence_threshold": 0.16,
+        "iou_threshold": 0.45,
+        "test_image_path": "C:/Users/vangie/.gemini/antigravity-ide/brain/1b287cc4-eb89-43c6-b3e0-23120dfaab26/.user_uploaded/media_1791482985161.png"
+    }
+}
