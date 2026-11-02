@@ -162,7 +162,10 @@ class AIAssistantMode(BaseMode):
             self.app.display.show_ai_processing(query)
 
         if self.app.speech:
-            self.app.speech.speak(query, interrupt=False)
+            if hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+                self.app.speech.speak_text(query, interrupt=False)
+            else:
+                self.app.speech.speak(query, interrupt=False)
 
         # Start background thread for Ollama inference
         threading.Thread(target=self._process_query, args=(query,), daemon=True).start()

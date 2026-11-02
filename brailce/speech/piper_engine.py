@@ -17,6 +17,7 @@ Features:
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import queue
@@ -25,6 +26,7 @@ import subprocess
 import sys
 import threading
 import time
+import wave
 from typing import Optional
 
 from brailce.speech.audio_device import AudioDeviceCoordinator
@@ -329,18 +331,24 @@ class PiperEngine(SpeechEngine):
         if not speech_text:
             return
 
+        words = speech_text.split()
+        # For single words or short tokens, use 1.05 for natural non-rushed cadence
+        length_scale = "1.05" if len(words) <= 2 else "1.0"
+
         # -------------------------------------------------------------------
         # Piper pipeline:
-        #   piper --model model.onnx --output-raw --length-scale 1.0 | aplay ...
+        #   piper --model model.onnx --output-raw --length-scale ...
         #
-        # Acquires shared AudioDeviceCoordinator lock so Piper and eSpeak
-        # never conflict or collide on the MAX98357A I2S DAC.
+        # Wraps with 150ms leading silence (for I2S clock lock) and 200ms
+        # trailing silence (for DMA buffer drain), builds a standard WAV header,
+        # and streams directly to aplay so ALSA reads the exact 22050 Hz format
+        # without forcing raw flags.
         # -------------------------------------------------------------------
         cmd_piper = [
             self._binary,
             "--model", self._model,
             "--output-raw",
-            "--length-scale", "1.0",
+            "--length-scale", length_scale,
         ]
 
         # 150ms leading silence (6616 bytes) for MAX98357A I2S DAC clock lock
@@ -369,9 +377,20 @@ class PiperEngine(SpeechEngine):
 
                     padded_pcm = pre_silence + raw_pcm + post_silence
 
+                    # Build valid WAV header with native 22050 Hz 16-bit mono
+                    wav_buf = io.BytesIO()
+                    with wave.open(wav_buf, "wb") as wf:
+                        wf.setnchannels(1)
+                        wf.setsampwidth(2)
+                        wf.setframerate(22050)
+                        wf.writeframes(padded_pcm)
+                    wav_bytes = wav_buf.getvalue()
+
                     if sys.platform != "win32":
+                        # Feed complete WAV file to aplay via stdin so ALSA reads the WAV header
+                        # directly without forcing raw -r flags that mismatch or glitch DAC buffers
                         p_aplay = subprocess.Popen(
-                            ["aplay", "-r", "22050", "-f", "S16_LE", "-t", "raw", "-q", "-"],
+                            ["aplay", "-q", "-"],
                             stdin=subprocess.PIPE,
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
@@ -380,21 +399,17 @@ class PiperEngine(SpeechEngine):
                             self._current_process = p_aplay
                         AudioDeviceCoordinator.register_process(p_aplay, "piper")
 
-                        p_aplay.communicate(padded_pcm, timeout=20)
+                        p_aplay.communicate(wav_bytes, timeout=20)
                         if p_aplay.returncode == 0:
                             break
                         else:
                             time.sleep(0.08)
                     else:
                         # Windows simulation fallback
-                        import tempfile, wave, winsound
+                        import tempfile, winsound
                         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
                             t_path = tf.name
-                        with wave.open(t_path, "wb") as wf:
-                            wf.setnchannels(1)
-                            wf.setsampwidth(2)
-                            wf.setframerate(22050)
-                            wf.writeframes(padded_pcm)
+                            tf.write(wav_bytes)
                         winsound.PlaySound(t_path, winsound.SND_FILENAME)
                         try:
                             os.remove(t_path)

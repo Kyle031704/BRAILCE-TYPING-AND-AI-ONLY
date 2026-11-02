@@ -146,10 +146,16 @@ CHARACTER_FILENAME_MAP: Dict[str, str] = {
 }
 
 # Set of strings that represent isolated keystroke sounds (not words)
-KEYSTROKE_SOUND_NAMES: Set[str] = set(ESPEAK_NAME_TO_CHAR.keys()) | set(ESPEAK_DIGIT_WORDS_TO_DIGIT.keys()) | {
-    "PLUS", "MINUS", "TIMES", "DIVIDED BY", "EQUALS",
-    "PERIOD", "COMMA", "QUESTION MARK", "EXCLAMATION MARK", "NUMBER SIGN"
-}
+KEYSTROKE_SOUND_NAMES: Set[str] = (
+    set(chr(c) for c in range(ord("A"), ord("Z") + 1))
+    | set(chr(c) for c in range(ord("0"), ord("9") + 1))
+    | set(ESPEAK_NAME_TO_CHAR.keys())
+    | set(ESPEAK_DIGIT_WORDS_TO_DIGIT.keys())
+    | {
+        "PLUS", "MINUS", "TIMES", "DIVIDED BY", "EQUALS",
+        "PERIOD", "COMMA", "QUESTION MARK", "EXCLAMATION MARK", "NUMBER SIGN"
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +165,7 @@ KEYSTROKE_SOUND_NAMES: Set[str] = set(ESPEAK_NAME_TO_CHAR.keys()) | set(ESPEAK_D
 def is_keystroke_feedback(text: str) -> bool:
     """
     Check if a string represents an individual keystroke (single letter, digit,
-    operator, or explicit letter name like 'Bee') rather than a word or sentence.
+    operator, or explicit letter/symbol name) rather than a word or sentence.
     """
     if not text:
         return False
@@ -167,6 +173,8 @@ def is_keystroke_feedback(text: str) -> bool:
     if len(trimmed) == 1:
         return True
     upper = trimmed.upper().rstrip(".")
+    if len(upper) == 1:
+        return True
     if upper in KEYSTROKE_SOUND_NAMES:
         return True
     return False
