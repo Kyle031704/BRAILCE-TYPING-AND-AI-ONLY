@@ -39,6 +39,7 @@ FILES_TO_DEPLOY = [
     "brailce/modes/math_mode.py",
     "brailce/modes/ai_assistant.py",
     "brailce/modes/scanner_mode.py",
+    "brailce/vision/obr_engine.py",
     "brailce/braille/arithmetic.py",
     "brailce/ai/ollama_client.py",
     "brailce/audio/sound_effects.py",
@@ -53,6 +54,7 @@ FILES_TO_DEPLOY = [
     # Tests
     "brailce/tests/test_speech_service.py",
     "brailce/tests/test_normalizer.py",
+    "brailce/tests/test_obr_engine.py",
 ]
 
 

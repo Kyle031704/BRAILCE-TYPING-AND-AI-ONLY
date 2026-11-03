@@ -227,17 +227,90 @@ class OBREngine:
         return ""
 
     @classmethod
+    def filter_valid_detections(cls, boxes_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Validate candidate Braille detections to prevent camera sensor noise from triggering false positives:
+        1. Aspect ratio / circularity: min(w, h) / max(w, h) >= 0.65
+        2. Radius/size consistency: size within 35% of median size
+        3. Grid alignment: at least 3 valid detections aligned along rows or columns in a Braille grid
+        """
+        if not boxes_data or len(boxes_data) < 3:
+            return []
+
+        # 1. Circularity / aspect ratio check (circularity >= 0.65)
+        circular = []
+        for b in boxes_data:
+            w, h = b["w"], b["h"]
+            aspect = min(w, h) / max(1e-6, max(w, h))
+            if aspect >= 0.65:
+                circular.append(b)
+
+        if len(circular) < 3:
+            return []
+
+        # 2. Consistent radius / size (within 35% of median)
+        sizes = [(b["w"] + b["h"]) / 2.0 for b in circular]
+        median_s = float(np.median(sizes))
+        if median_s <= 0:
+            return []
+
+        consistent = []
+        for b in circular:
+            s = (b["w"] + b["h"]) / 2.0
+            if abs(s - median_s) / median_s <= 0.35:
+                consistent.append(b)
+
+        if len(consistent) < 3:
+            return []
+
+        # 3. Braille grid alignment check:
+        # Require at least 3 consistent dots aligned in a grid (e.g. shared row or column or multi-cell layout)
+        sorted_y = sorted(consistent, key=lambda b: b["y"])
+        rows: List[List[Dict[str, Any]]] = []
+        for b in sorted_y:
+            placed = False
+            for r in rows:
+                if abs(b["y"] - np.mean([item["y"] for item in r])) <= (median_s * 0.70):
+                    r.append(b)
+                    placed = True
+                    break
+            if not placed:
+                rows.append([b])
+
+        sorted_x = sorted(consistent, key=lambda b: b["x"])
+        cols: List[List[Dict[str, Any]]] = []
+        for b in sorted_x:
+            placed = False
+            for c in cols:
+                if abs(b["x"] - np.mean([item["x"] for item in c])) <= (median_s * 0.70):
+                    c.append(b)
+                    placed = True
+                    break
+            if not placed:
+                cols.append([b])
+
+        has_row_aligned = any(len(r) >= 3 for r in rows)
+        has_col_aligned = any(len(c) >= 3 for c in cols)
+        has_grid = (len(rows) >= 2 and any(len(r) >= 2 for r in rows)) or (len(cols) >= 2 and any(len(c) >= 2 for c in cols))
+
+        if not (has_row_aligned or has_col_aligned or has_grid):
+            return []
+
+        return consistent
+
+    @classmethod
     def decode_boxes(cls, boxes_data: List[Dict[str, Any]], space_threshold: Optional[float] = None) -> Dict[str, Any]:
         """
         Process bounding box data, perform adaptive line clustering, horizontal sorting,
         word space reconstruction, and Grade 1 indicator translation.
         """
-        if not boxes_data or len(boxes_data) < 2:
-            return {"readable": False, "text": "Not enough braille detected. Please adjust camera."}
+        valid_boxes = cls.filter_valid_detections(boxes_data)
+        if not valid_boxes or len(valid_boxes) < 3:
+            return {"readable": False, "text": "No Braille detected. Please adjust the sheet."}
 
         # 1. Adaptive sizing
-        widths = [b["w"] for b in boxes_data]
-        heights = [b["h"] for b in boxes_data]
+        widths = [b["w"] for b in valid_boxes]
+        heights = [b["h"] for b in valid_boxes]
         median_w = float(np.median(widths)) if widths else 30.0
         median_h = float(np.median(heights)) if heights else 40.0
 
@@ -245,7 +318,7 @@ class OBREngine:
             space_threshold = max(20.0, median_w * 1.30)
 
         # 2. Robust vertical line clustering (handles tilted paper)
-        sorted_by_y = sorted(boxes_data, key=lambda b: b["y"])
+        sorted_by_y = sorted(valid_boxes, key=lambda b: b["y"])
         lines: List[List[Dict[str, Any]]] = []
 
         for b in sorted_by_y:
@@ -339,8 +412,10 @@ class OBREngine:
                 line_strings.append(clean_l)
 
         final_text = " \n ".join(line_strings).strip()
-        logger.info("Decoded text: %s", final_text)
+        if not final_text:
+            return {"readable": False, "text": "No Braille detected. Please adjust the sheet."}
 
+        logger.info("Decoded text: %s", final_text)
         return {"readable": True, "text": final_text}
 
     @staticmethod
@@ -361,18 +436,79 @@ class OBREngine:
         except Exception:
             return image
 
+    @staticmethod
+    def has_paper_background(image: np.ndarray) -> bool:
+        """
+        Verify that a physical paper sheet with actual contrast exists in the frame.
+        Prevents dark camera sensor noise from being amplified by CLAHE into false Braille dots.
+        Paper & Contrast Gate:
+        - Real paper under illumination must have brightness: np.percentile(gray, 85) > 95
+        - Real embossed dots and paper under illumination must have local shadow contrast: np.percentile(gray, 95) - np.percentile(gray, 5) > 40
+        """
+        if image is None or image.size == 0:
+            return False
+        try:
+            if cv2 is not None and len(image.shape) == 3:
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            elif len(image.shape) == 3:
+                gray = np.mean(image, axis=2).astype(np.uint8)
+            else:
+                gray = image
+
+            p85 = float(np.percentile(gray, 85))
+            if p85 <= 95.0:
+                return False
+
+            p95 = float(np.percentile(gray, 95))
+            p5 = float(np.percentile(gray, 5))
+            if (p95 - p5) <= 40.0:
+                return False
+
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _extract_boxes(results: Any) -> List[Dict[str, Any]]:
+        """Extract bounding box coordinate dictionaries from YOLO results."""
+        boxes_data = []
+        if not results:
+            return boxes_data
+        for result in results:
+            if not hasattr(result, "boxes") or result.boxes is None:
+                continue
+            for box in result.boxes:
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                class_id = int(box.cls[0])
+                class_name = str(result.names[class_id])
+                conf = float(box.conf[0])
+                boxes_data.append({
+                    "x": (x1 + x2) / 2.0,
+                    "y": (y1 + y2) / 2.0,
+                    "w": abs(x2 - x1),
+                    "h": abs(y2 - y1),
+                    "name": class_name,
+                    "conf": conf
+                })
+        return boxes_data
+
     def detect_braille_presence(self, image: np.ndarray) -> bool:
-        """Fast check if any Braille cells are visible in the viewfinder."""
-        if image is None or not self._load_model():
+        """Fast check if valid Braille cells are visible in the viewfinder."""
+        if image is None or not self.has_paper_background(image) or not self._load_model():
             return False
         try:
             enhanced = self.enhance_contrast(image)
             results = self._model(enhanced, conf=self.conf, verbose=False)
-            if results and len(results[0].boxes) >= 2:
+            boxes_data = self._extract_boxes(results)
+            valid = self.filter_valid_detections(boxes_data)
+            if len(valid) >= 3:
                 return True
+
             # Fallback check on raw frame
             results_raw = self._model(image, conf=self.conf, verbose=False)
-            if results_raw and len(results_raw[0].boxes) >= 2:
+            boxes_data_raw = self._extract_boxes(results_raw)
+            valid_raw = self.filter_valid_detections(boxes_data_raw)
+            if len(valid_raw) >= 3:
                 return True
         except Exception as exc:
             logger.debug("detect_braille_presence error: %s", exc)
@@ -385,6 +521,10 @@ class OBREngine:
         """
         if image is None:
             return {"readable": False, "text": "Error: No image provided."}
+
+        if not self.has_paper_background(image):
+            logger.info("No paper background detected in image (low contrast or dark).")
+            return {"readable": False, "text": "No Braille detected. Please adjust the sheet."}
 
         if not self._load_model():
             import os
@@ -401,27 +541,16 @@ class OBREngine:
         # 1. Dual-pass inference: Try CLAHE contrast-enhanced image first, then raw image
         enhanced = self.enhance_contrast(image)
         results = self._model(enhanced, conf=self.conf, iou=self.iou, verbose=False)
-        boxes_count = sum(len(r.boxes) for r in results) if results else 0
+        boxes_data = self._extract_boxes(results)
+        valid_boxes = self.filter_valid_detections(boxes_data)
 
-        if boxes_count < 2:
+        if len(valid_boxes) < 3:
             # Fallback pass on raw image
-            results = self._model(image, conf=self.conf, iou=self.iou, verbose=False)
-
-        boxes_data = []
-        for result in results:
-            for box in result.boxes:
-                x1, y1, x2, y2 = box.xyxy[0].tolist()
-                class_id = int(box.cls[0])
-                class_name = str(result.names[class_id])
-                conf = float(box.conf[0])
-                boxes_data.append({
-                    "x": (x1 + x2) / 2.0,
-                    "y": (y1 + y2) / 2.0,
-                    "w": abs(x2 - x1),
-                    "h": abs(y2 - y1),
-                    "name": class_name,
-                    "conf": conf
-                })
+            results_raw = self._model(image, conf=self.conf, iou=self.iou, verbose=False)
+            boxes_data_raw = self._extract_boxes(results_raw)
+            valid_raw = self.filter_valid_detections(boxes_data_raw)
+            if len(valid_raw) >= len(valid_boxes):
+                boxes_data = boxes_data_raw
 
         return self.decode_boxes(boxes_data)
 

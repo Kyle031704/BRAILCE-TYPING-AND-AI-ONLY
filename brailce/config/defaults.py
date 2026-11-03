@@ -99,15 +99,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "host": "http://127.0.0.1:11434",
         "model": "MODEL_NAME_HERE",
         "timeout_seconds": 30,
-        "max_response_tokens": 35,
+        "max_response_tokens": 80,
         "temperature": 0.5,
         "system_prompt": (
-            "You are Brailce, a friendly and clear educational voice assistant "
-            "for a Grade 1 Braille learning device. Rules: 1. If greeted "
-            "(like 'hello', 'hi', or 'okay'), reply with a short friendly greeting under 10 words. "
-            "2. Answer learning questions simply in 1 or 2 short sentences for elementary children. "
-            "3. Answer math directly. 4. Never give emotional therapy advice. "
-            "5. Keep answers under 25 words with no markdown or bullet points."
+            "You are Brailce, a friendly voice assistant for Grade 1 Braille learners. "
+            "Answer ONLY the user's actual question in 1 to 2 short, complete sentences. "
+            "Never mention math unless the user asks a math question. "
+            "Always finish your sentence completely."
         ),
     },
 

@@ -76,7 +76,7 @@ class ScannerMode(BaseMode):
                         if detected is True and self.app.speech:
                             self.app.speech.speak_text("Braille detected. Press enter to translate.", interrupt=False)
                         elif detected is False and _last_detected_state is not None and self.app.speech:
-                            self.app.speech.speak_text("No braille detected. Adjust sheet.", interrupt=False)
+                            self.app.speech.speak_text("No Braille detected. Please adjust the sheet.", interrupt=False)
                         _last_detected_state = detected
                 except Exception as exc:
                     logger.debug("Presence detection error: %s", exc)
@@ -130,8 +130,8 @@ class ScannerMode(BaseMode):
             # Fallback to full uncropped frame
             result = self.app.obr.process_image(image)
 
-        if result.get("readable"):
-            self.scanned_text = result.get("text")
+        if result.get("readable") and result.get("text", "").strip():
+            self.scanned_text = result.get("text").strip()
             self._is_scanning = False
             if self.app.display:
                 self.app.display.show_status("Braille translated! Press Enter to Read.")
@@ -145,7 +145,7 @@ class ScannerMode(BaseMode):
             if self.app.display:
                 self.app.display.show_status(f"⚠ {err_msg}")
             if self.app.speech:
-                self.app.speech.speak_text("No Braille detected. Adjust sheet.", interrupt=True)
+                self.app.speech.speak_text("No Braille detected. Please adjust the sheet.", interrupt=True)
 
     def _speak_result(self) -> None:
         """Speak the text that was scanned upon user confirmation."""

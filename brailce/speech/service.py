@@ -2,101 +2,38 @@
 Brailce Centralized Speech Service
 ===================================
 
-Provides a unified, high-level speech service for all application modes.
-Coordinates between:
-    - Low-latency character-by-character feedback (eSpeak NG)
-    - High-fidelity natural reading for words, sentences, and AI (Piper TTS)
-    - Graceful fallback when Piper is unavailable
-    - Non-overlapping queue and rapid-typing interruption
-
-Configurable speech behaviors:
-    - "character": announce each newly entered character
-    - "character_and_word": announce each character and completed word at word boundary
-    - "completed_text_only": read completed words and sentences as ordinary text
+Unified speech coordinator:
+- ALL voice output (characters, words, sentences, math, AI tutor, and mode announcements)
+  passes through normalizer.py directly into Piper Neural TTS (Ryan).
+- No fallback to eSpeak NG when Piper is available.
+- No disk lookup of old broken char_*.wav files.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import re
 import threading
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple
 
+from brailce.speech.audio_device import AudioDeviceCoordinator
 from brailce.speech.base import SpeechEngine
-from brailce.speech.espeak_engine import EspeakEngine, clean_speech_text
 from brailce.speech.normalizer import (
-    is_keystroke_feedback,
-    normalize_for_espeak_character,
+    DIGIT_MAP,
+    LETTER_MAP,
+    MATH_OPERATORS,
+    PUNCTUATION_MAP,
     normalize_for_piper,
 )
 from brailce.speech.piper_engine import PiperEngine
 
 logger = logging.getLogger(__name__)
 
-# Standard Grade 1 Letter Names (with period for falling, definitive pitch)
-# No artificial phonetic respellings (like "Bee", "See", "Aitch") to ensure natural American prosody
-LETTER_NAME_MAP: Dict[str, str] = {
-    "A": "A.",
-    "B": "B.",
-    "C": "C.",
-    "D": "D.",
-    "E": "E.",
-    "F": "F.",
-    "G": "G.",
-    "H": "H.",
-    "I": "I.",
-    "J": "J.",
-    "K": "K.",
-    "L": "L.",
-    "M": "M.",
-    "N": "N.",
-    "O": "O.",
-    "P": "P.",
-    "Q": "Q.",
-    "R": "R.",
-    "S": "S.",
-    "T": "T.",
-    "U": "U.",
-    "V": "V.",
-    "W": "W.",
-    "X": "X.",
-    "Y": "Y.",
-    "Z": "Z.",
-}
-
-DIGIT_NAME_MAP: Dict[str, str] = {
-    "0": "zero.",
-    "1": "one.",
-    "2": "two.",
-    "3": "three.",
-    "4": "four.",
-    "5": "five.",
-    "6": "six.",
-    "7": "seven.",
-    "8": "eight.",
-    "9": "nine.",
-}
-
-MATH_SYMBOL_MAP: Dict[str, str] = {
-    "+": "plus.",
-    "-": "minus.",
-    "*": "times.",
-    "/": "divided by.",
-    "=": "equals.",
-}
-
-PUNCTUATION_NAME_MAP: Dict[str, str] = {
-    ".": "period.",
-    ",": "comma.",
-    "?": "question mark.",
-    "!": "exclamation mark.",
-    "'": "apostrophe.",
-    '"': "quote.",
-    ":": "colon.",
-    ";": "semicolon.",
-    "#": "number sign.",
-}
+# Exported maps for backward-compatibility with tests & UI
+LETTER_NAME_MAP: Dict[str, str] = {chr(c): f"{chr(c).lower()}." for c in range(ord("A"), ord("Z") + 1)}
+DIGIT_NAME_MAP: Dict[str, str] = dict(DIGIT_MAP)
+MATH_SYMBOL_MAP: Dict[str, str] = dict(MATH_OPERATORS)
+PUNCTUATION_NAME_MAP: Dict[str, str] = dict(PUNCTUATION_MAP)
 
 VALID_BEHAVIORS = {"character", "character_and_word", "completed_text_only"}
 
@@ -104,23 +41,24 @@ VALID_BEHAVIORS = {"character", "character_and_word", "completed_text_only"}
 class SpeechService(SpeechEngine):
     """
     Centralized speech coordinator for the Brailce device.
-    Implements SpeechEngine interface for drop-in compatibility.
+    Directs all speech through Piper Neural TTS.
     """
 
     def __init__(
         self,
         character_engine: Optional[SpeechEngine] = None,
         text_engine: Optional[SpeechEngine] = None,
+        piper_engine: Optional[SpeechEngine] = None,
         behavior: str = "character_and_word",
-        voice: str = "en-us+f3",
-        rate: int = 150,
+        voice: str = "en_US-ryan-medium.onnx",
+        rate: int = 160,
         volume: int = 100,
-        pitch: int = 52,
+        pitch: int = 50,
     ) -> None:
-        self._character_engine = character_engine or EspeakEngine(
-            voice=voice, rate=rate, volume=volume, pitch=pitch
-        )
-        self._text_engine = text_engine or self._character_engine
+        engine = piper_engine or text_engine or character_engine or PiperEngine(rate=rate, volume=volume)
+        self._engine = engine
+        self._character_engine = character_engine or engine
+        self._text_engine = text_engine or engine
         self._behavior = behavior if behavior in VALID_BEHAVIORS else "character_and_word"
         self._voice = voice
         self._rate = rate
@@ -131,11 +69,7 @@ class SpeechService(SpeechEngine):
 
     @property
     def engine_name(self) -> str:
-        c_name = self._character_engine.engine_name
-        t_name = self._text_engine.engine_name
-        if c_name == t_name:
-            return f"SpeechService ({c_name})"
-        return f"SpeechService (Char: {c_name}, Text: {t_name})"
+        return f"SpeechService ({self._engine.engine_name})"
 
     @property
     def character_engine(self) -> SpeechEngine:
@@ -156,145 +90,123 @@ class SpeechService(SpeechEngine):
         return None
 
     def set_behavior(self, behavior: str) -> None:
-        """Set the active speech feedback behavior."""
         if behavior in VALID_BEHAVIORS:
             self._behavior = behavior
             logger.info("SpeechService behavior set to: %s", behavior)
-        else:
-            logger.warning("Invalid speech behavior: %r (valid: %s)", behavior, VALID_BEHAVIORS)
 
     def is_available(self) -> bool:
-        """Check if at least one speech engine is available."""
-        return self._character_engine.is_available() or self._text_engine.is_available()
+        return self._engine.is_available()
 
     def set_voice(self, voice: str) -> None:
         self._voice = voice
-        self._character_engine.set_voice(voice)
-        if self._text_engine is not self._character_engine:
-            self._text_engine.set_voice(voice)
+        self._engine.set_voice(voice)
 
     def set_rate(self, rate: int) -> None:
         self._rate = rate
-        self._character_engine.set_rate(rate)
-        if self._text_engine is not self._character_engine:
-            self._text_engine.set_rate(rate)
+        self._engine.set_rate(rate)
 
     def set_volume(self, volume: int) -> None:
         self._volume = volume
-        self._character_engine.set_volume(volume)
-        if self._text_engine is not self._character_engine:
-            self._text_engine.set_volume(volume)
+        self._engine.set_volume(volume)
 
     def set_pitch(self, pitch: int) -> None:
         self._pitch = pitch
-        if hasattr(self._character_engine, "set_pitch"):
-            self._character_engine.set_pitch(pitch)
-        if self._text_engine is not self._character_engine and hasattr(self._text_engine, "set_pitch"):
-            self._text_engine.set_pitch(pitch)
+        if hasattr(self._engine, "set_pitch"):
+            self._engine.set_pitch(pitch)
 
     def stop_speech(self) -> None:
-        """Stop all speech playback across all active engines."""
+        self.stop()
+
+    def stop_current(self) -> None:
         self.stop()
 
     def stop(self) -> None:
-        """Immediately stop currently playing audio and drain speech queues.
-        Does NOT kill the worker thread — it remains ready for new speech."""
+        """Immediately stop active speech and cancel queued items."""
         try:
-            if hasattr(self._character_engine, 'stop_current'):
-                self._character_engine.stop_current()
-            else:
-                self._character_engine.stop()
+            self._engine.stop()
         except Exception as e:
-            logger.debug("Error stopping character engine: %s", e)
-
-        if self._text_engine is not self._character_engine:
+            logger.debug("Error stopping engine: %s", e)
+        if hasattr(self, "_character_engine") and self._character_engine is not self._engine:
             try:
-                if hasattr(self._text_engine, 'stop_current'):
-                    self._text_engine.stop_current()
-                else:
-                    self._text_engine.stop()
-            except Exception as e:
-                logger.debug("Error stopping text engine: %s", e)
-
-    def shutdown(self) -> None:
-        """Fully shut down the speech service and worker threads.
-        Called only during application shutdown."""
-        try:
-            self._character_engine.stop()
-        except Exception as e:
-            logger.debug("Error shutting down character engine: %s", e)
-
-        if self._text_engine is not self._character_engine:
+                self._character_engine.stop()
+            except Exception:
+                pass
+        if hasattr(self, "_text_engine") and self._text_engine is not self._engine and self._text_engine is not self._character_engine:
             try:
                 self._text_engine.stop()
-            except Exception as e:
-                logger.debug("Error shutting down text engine: %s", e)
+            except Exception:
+                pass
+        AudioDeviceCoordinator.interrupt_active()
+
+    def shutdown(self) -> None:
+        self.stop()
 
     # -----------------------------------------------------------------------
-    # High-Level Speech Methods
+    # High-Level Speech Methods (All Routed Directly into Piper via normalizer)
     # -----------------------------------------------------------------------
 
     def speak_character(self, character: str) -> None:
         """
-        Speak immediate, unambiguous letter name or character feedback.
-        Respects speech behavior: suppressed if behavior is 'completed_text_only'.
+        Speak individual keystroke feedback (A-Z -> a., digits, operators, punctuation).
+        Passes directly through normalizer.py into Piper.
+        Uses instant pre-cached carrier WAV if available.
         """
         if not character:
             return
 
-        # In completed_text_only mode, individual character feedback is suppressed
         if self._behavior == "completed_text_only":
             return
 
-        char_clean = character.strip()
-        if not char_clean:
+        normalized = normalize_for_piper(character, is_character=True)
+        if not normalized:
             return
 
-        char_upper = char_clean.upper().rstrip(".")
+        self._record_utterance("character", normalized, {"character": character})
 
-        # Resolve explicit pronunciation mapping via normalizer or tables
-        spoken_text = normalize_for_espeak_character(char_clean)
-        if not spoken_text:
-            if char_upper in LETTER_NAME_MAP:
-                spoken_text = LETTER_NAME_MAP[char_upper]
-            elif char_clean in DIGIT_NAME_MAP:
-                spoken_text = DIGIT_NAME_MAP[char_clean]
-            elif char_clean in MATH_SYMBOL_MAP:
-                spoken_text = MATH_SYMBOL_MAP[char_clean]
-            elif char_clean in PUNCTUATION_NAME_MAP:
-                spoken_text = PUNCTUATION_NAME_MAP[char_clean]
-            else:
-                spoken_text = f"{char_clean}."
+        # Try instant pre-cached carrier audio playback first
+        if hasattr(self._character_engine, "play_cached_character"):
+            if self._character_engine.play_cached_character(character):
+                return
 
-        self._record_utterance("character", spoken_text, {"character": character})
-
-        # Use centralized eSpeak NG engine for sequential, non-overlapping speech
         with self._lock:
-            self._character_engine.speak(spoken_text, interrupt=False)
+            self._character_engine.speak(normalized, interrupt=False)
+
+    def speak_word(self, word: str) -> None:
+        """
+        Speak a completed word (on SPACE) through normalizer.py into Piper.
+        If word is a single letter or character, route directly to speak_character()
+        to play the clean cached character WAV.
+        """
+        if not word:
+            return
+
+        clean = word.strip().rstrip(".")
+        if len(clean) == 1:
+            self.speak_character(clean)
+            return
+
+        normalized = normalize_for_piper(word, is_word=True)
+        if not normalized:
+            return
+
+        self._record_utterance("word", normalized, {"word": word})
+
+        with self._lock:
+            self._text_engine.speak(normalized, interrupt=False)
 
     def speak_symbol(self, symbol: str, context: str = "text") -> None:
-        """
-        Speak a mathematical operator or punctuation mark in context.
-        """
+        """Speak mathematical operator or punctuation in context."""
         if not symbol:
             return
 
-        sym = symbol.strip()
-        if context == "math" and sym == "*":
-            spoken = "multiplied by."
-        elif context == "math" and sym in MATH_SYMBOL_MAP:
-            spoken = MATH_SYMBOL_MAP[sym]
-        elif sym in PUNCTUATION_NAME_MAP:
-            spoken = PUNCTUATION_NAME_MAP[sym]
-        elif sym in MATH_SYMBOL_MAP:
-            spoken = MATH_SYMBOL_MAP[sym]
-        else:
-            spoken = sym
+        normalized = normalize_for_piper(symbol, context=context, is_character=True)
+        if not normalized:
+            return
 
-        self._record_utterance("symbol", spoken, {"symbol": symbol, "context": context})
+        self._record_utterance("symbol", normalized, {"symbol": symbol, "context": context})
 
         with self._lock:
-            self._character_engine.speak(spoken, interrupt=False)
+            self._character_engine.speak(normalized, interrupt=False)
 
     def speak_text(
         self,
@@ -303,36 +215,35 @@ class SpeechService(SpeechEngine):
         engine_hint: Optional[str] = None,
     ) -> None:
         """
-        Speak complete words, sentences, math explanations, scanner output,
-        or AI tutor responses as natural, fluent speech.
-
-        Punctuation is preserved for cadence, natural pauses, and intonation,
-        rather than announced as words.
+        Speak sentences, math explanations, AI responses, or mode announcements.
+        Passes directly through normalizer.py into Piper.
+        If single character, routes to speak_character() to play clean cached audio.
         """
         if not text:
             return
 
-        cleaned = clean_speech_text(text)
-        if not cleaned:
+        clean = text.strip().rstrip(".")
+        if len(clean) == 1:
+            self.speak_character(clean)
             return
 
-        self._record_utterance("text", cleaned, {"interrupt": interrupt, "engine_hint": engine_hint})
+        normalized = normalize_for_piper(text)
+        if not normalized:
+            return
 
-        # Select engine: Piper if available/configured, otherwise fallback to eSpeak
+        self._record_utterance("text", normalized, {"interrupt": interrupt, "engine_hint": engine_hint})
+
         target_engine = self._text_engine
         if engine_hint == "character" or not target_engine.is_available():
             target_engine = self._character_engine
 
         with self._lock:
-            # If interrupt requested, stop both engines first
             if interrupt:
                 self.stop()
-            target_engine.speak(cleaned, interrupt=interrupt)
+            target_engine.speak(normalized, interrupt=interrupt)
 
     def speak_math_expression(self, expression: str) -> None:
-        """
-        Evaluate and speak a mathematical expression with pedagogical clarity.
-        """
+        """Evaluate and speak mathematical expression with teacher clarity."""
         if not expression:
             return
 
@@ -341,36 +252,23 @@ class SpeechService(SpeechEngine):
         if solution.is_valid:
             self.speak_text(solution.explanation, interrupt=False)
         else:
-            # Format expression into natural speech words if solve failed
-            s = expression.replace("+", " plus ").replace("-", " minus ")
-            s = s.replace("*", " times ").replace("/", " divided by ").replace("=", " equals ")
-            s = " ".join(s.split())
-            self.speak_text(s, interrupt=False)
+            self.speak_text(expression, interrupt=False)
 
     def replay_last_utterance(self) -> None:
-        """Replay the most recently spoken utterance."""
         if not self._last_utterance:
-            logger.debug("No previous utterance to replay.")
             return
 
         kind, text, kwargs = self._last_utterance
-        logger.info("Replaying last utterance (%s): %r", kind, text)
-
         if kind == "character":
-            char = kwargs.get("character", text)
-            self.speak_character(char)
-        elif kind == "symbol":
-            sym = kwargs.get("symbol", text)
-            ctx = kwargs.get("context", "text")
-            self.speak_symbol(sym, context=ctx)
+            self.speak_character(kwargs.get("character", text))
+        elif kind == "word":
+            self.speak_word(kwargs.get("word", text))
         else:
             self.speak_text(text, interrupt=True)
 
     def speak(self, text: str, interrupt: Optional[bool] = None) -> None:
         """
-        Backward-compatible speak interface.
-        Individual keystrokes are routed to speak_character (eSpeak NG);
-        words and sentences are routed to speak_text (Piper TTS).
+        Main entry point: passes through normalizer.py into Piper.
         """
         if not text:
             return
@@ -379,73 +277,41 @@ class SpeechService(SpeechEngine):
         if not trimmed:
             return
 
-        # Check if text is a single keystroke (character, digit, operator, or letter name like "Bee")
-        if is_keystroke_feedback(trimmed):
-            self.speak_character(trimmed)
+        clean = trimmed.rstrip(".")
+        if len(clean) == 1:
+            self.speak_character(clean)
             return
 
-        # Whole words and sentences -> Piper Neural TTS
         self.speak_text(text, interrupt=bool(interrupt))
 
     def _record_utterance(self, kind: str, text: str, kwargs: Dict[str, Any]) -> None:
         self._last_utterance = (kind, text, kwargs)
 
-    # -----------------------------------------------------------------------
-    # Factory / Loader
-    # -----------------------------------------------------------------------
-
     @classmethod
     def from_config(cls, config: Any) -> "SpeechService":
         """
-        Build SpeechService according to application configuration and environment.
-        Uses eSpeak NG for zero-latency keystroke feedback and Piper for natural words/sentences.
+        Build SpeechService according to application configuration.
+        Initializes Piper Neural TTS as the unified speech engine.
         """
         speech_cfg = config.section("speech") if hasattr(config, "section") else {}
 
         behavior = os.getenv("SPEECH_BEHAVIOR", speech_cfg.get("behavior", "character_and_word")).lower()
-        voice = speech_cfg.get("voice", "en-us+m3")
-        rate = int(speech_cfg.get("rate", 165))
+        voice = speech_cfg.get("model", "en_US-ryan-medium.onnx")
+        rate = int(speech_cfg.get("rate", 160))
         volume = int(speech_cfg.get("volume", 100))
-        pitch = int(speech_cfg.get("pitch", 52))
-        word_gap = int(speech_cfg.get("word_gap_ms", 5))
+        pitch = int(speech_cfg.get("pitch", 50))
         max_queue = int(speech_cfg.get("max_queue_size", 50))
 
-        # 1. Zero-latency eSpeak NG engine for keystroke announcements
-        espeak = EspeakEngine(
-            voice=voice,
-            rate=rate,
-            volume=volume,
-            pitch=pitch,
-            word_gap=word_gap,
-            max_queue_size=max_queue,
-        )
-
-        # 2. Piper Neural TTS for natural full words, sentences, math, and AI responses
         piper = PiperEngine(
             rate=rate,
             volume=volume,
             max_queue_size=max_queue,
         )
 
-        # Unify ALL speech under Piper Neural TTS (Ryan) when available.
-        # Single characters use pre-cached Piper WAVs for zero-latency,
-        # while completed words, sentences, math, and AI use the neural model.
-        if piper.is_available():
-            char_engine = piper
-            text_engine = piper
-            logger.info("SpeechService initialized: Unified ALL speech under Piper Neural TTS (Ryan) with pre-cached keystrokes.")
-        else:
-            char_engine = espeak
-            text_engine = espeak
-            logger.info(
-                "SpeechService initialized: CharEngine=%s, TextEngine=%s (Piper available: False, using eSpeak fallback)",
-                espeak.engine_name,
-                espeak.engine_name,
-            )
-
         return cls(
-            character_engine=char_engine,
-            text_engine=text_engine,
+            character_engine=piper,
+            text_engine=piper,
+            piper_engine=piper,
             behavior=behavior,
             voice=voice,
             rate=rate,

@@ -16,6 +16,14 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_SYSTEM_PROMPT = (
+    "You are Brailce, a friendly voice assistant for Grade 1 Braille learners. "
+    "Answer ONLY the user's actual question in 1 to 2 short, complete sentences. "
+    "Never mention math unless the user asks a math question. "
+    "Always finish your sentence completely."
+)
+
+
 class OllamaClient:
     """
     Client for interacting with local Ollama instances via HTTP.
@@ -29,13 +37,13 @@ class OllamaClient:
         host: str = "http://127.0.0.1:11434",
         model: str = "llama3",
         system_prompt: Optional[str] = None,
-        num_predict: int = 50,
+        num_predict: int = 80,
         num_thread: int = 4,
     ) -> None:
         self.host = host.rstrip("/")
         self.model = model
-        self.system_prompt = system_prompt
-        self.num_predict = num_predict
+        self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
+        self.num_predict = max(80, num_predict)
         self.num_thread = num_thread
 
     def is_available(self) -> bool:
@@ -114,8 +122,9 @@ class OllamaClient:
             "prompt": prompt,
             "stream": False,
             "options": {
-                "num_predict": self.num_predict,
+                "num_predict": max(80, self.num_predict),
                 "num_thread": self.num_thread,
+                "stop": ["\n\n", "User:", "Question:", "Human:"],
             }
         }
         if self.system_prompt:
@@ -141,6 +150,11 @@ class OllamaClient:
                 reply = re.sub(r"\*\*([^*]+)\*\*", r"\1", reply)
                 reply = re.sub(r"^[•\*\-\+]\s+", "", reply, flags=re.MULTILINE)
                 reply = re.sub(r"\s+", " ", reply).strip()
+
+                # Strip trailing incomplete sentence fragment if model was cut off mid-sentence
+                last_punct = max(reply.rfind("."), reply.rfind("!"), reply.rfind("?"))
+                if last_punct != -1 and (len(reply) - 1 - last_punct) > 0:
+                    reply = reply[:last_punct + 1].strip()
 
                 logger.info("Received response from Ollama (len %d)", len(reply))
                 return reply if reply else None

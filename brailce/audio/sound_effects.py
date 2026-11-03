@@ -23,25 +23,24 @@ Implementation:
     - Synthesizes studio-grade acoustic waveforms with natural ADSR / exponential
       decay envelopes on startup.
     - Caches pre-rendered WAV files for instant <2ms non-blocking playback.
-    - Windows: Asynchronous playback via winsound (SND_FILENAME | SND_ASYNC).
-    - Linux / Raspberry Pi: Non-blocking playback via aplay / pw-play / paplay.
-    - Safe graceful fallback in headless or test environments.
+    - Uses AudioDeviceCoordinator to share the MAX98357A I2S DAC safely with Piper TTS,
+      preventing device busy errors and ALSA underruns.
+    - Standard safe aplay -q playback pipeline (exact mode-introduction pattern).
 """
 
 from __future__ import annotations
 
-import io
 import logging
 import math
 import os
-import shutil
 import struct
-import subprocess
 import sys
 import tempfile
 import threading
 import wave
 from typing import Dict, Optional
+
+from brailce.speech.audio_device import AudioDeviceCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -73,10 +72,6 @@ class SoundEffectsEngine:
         self._cache_dir = cache_dir or os.path.join(tempfile.gettempdir(), "brailce_sounds")
         self._sound_files: Dict[str, str] = {}
         self._lock = threading.Lock()
-        self._player_cmd: Optional[str] = None
-
-        if sys.platform != "win32":
-            self._player_cmd = self._detect_linux_player()
 
         try:
             self._precompute_all_sounds()
@@ -95,9 +90,7 @@ class SoundEffectsEngine:
         """Check whether audio playback is available on this platform."""
         if not self.enabled:
             return False
-        if sys.platform == "win32":
-            return True
-        return self._player_cmd is not None
+        return True
 
     def play(self, sound_name: str) -> None:
         """
@@ -121,12 +114,12 @@ class SoundEffectsEngine:
         Play an instantaneous tick whose pitch and volume reflect the new volume level.
         Pitch scales from 350 Hz (at 0%) to 1250 Hz (at 100%).
         """
-        if not self.enabled:
+        if not self.enabled or self._volume <= 0:
             return
 
         vol = max(0, min(100, volume_percent))
         freq = 350.0 + (vol * 9.0)  # 350 Hz -> 1250 Hz
-        amp = max(0.1, vol / 100.0)
+        amp = max(0.1, (vol / 100.0) * (self._volume / 100.0))
 
         # Generate on-demand short tick (20ms)
         def _play_tick():
@@ -145,41 +138,27 @@ class SoundEffectsEngine:
             except Exception as exc:
                 logger.debug("Volume tick playback error: %s", exc)
 
-        threading.Thread(target=_play_tick, daemon=True).start()
+        threading.Thread(target=_play_tick, daemon=True, name="brailce-sound-tick").start()
 
     # ---- Internal Playback ----
 
     def _play_file_async(self, file_path: str) -> None:
-        """Dispatch non-blocking playback of a WAV file."""
-        if sys.platform == "win32":
+        """
+        Dispatch non-blocking playback of a WAV file through AudioDeviceCoordinator.
+        Uses the exact standard mode-introduction pipeline (aplay -q) to prevent static.
+        """
+        def _runner():
             try:
-                import winsound
-                # SND_ASYNC plays in background, SND_FILENAME loads from disk with zero memory overhead
-                winsound.PlaySound(file_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+                AudioDeviceCoordinator.play_wav_file(file_path, owner="sound_effects", timeout=5.0)
             except Exception as exc:
-                logger.debug("Windows winsound playback error: %s", exc)
-        else:
-            if self._player_cmd:
-                try:
-                    subprocess.Popen(
-                        [self._player_cmd, file_path],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                except Exception as exc:
-                    logger.debug("Linux audio player error (%s): %s", self._player_cmd, exc)
+                logger.debug("Sound effects playback error for %s: %s", file_path, exc)
 
-    def _detect_linux_player(self) -> Optional[str]:
-        """Detect the best audio command-line player available on Linux / Raspberry Pi."""
-        for cmd in ["aplay", "pw-play", "paplay"]:
-            if shutil.which(cmd):
-                return cmd
-        return None
+        threading.Thread(target=_runner, daemon=True, name="brailce-sound-play").start()
 
     # ---- Waveform Synthesis & Caching ----
 
     def _save_wav(self, file_path: str, frames: bytearray) -> str:
-        """Write raw 16-bit PCM mono frames into a valid WAV file."""
+        """Write raw 16-bit PCM mono frames into a valid WAV file using wave module only."""
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         with wave.open(file_path, "wb") as wav:
             wav.setnchannels(1)
@@ -228,7 +207,6 @@ class SoundEffectsEngine:
         for i in range(n):
             t = i / self.SAMPLE_RATE
             env = math.exp(-i / (self.SAMPLE_RATE * 0.0035))
-            # Resonant micro-click glide 1150 Hz -> 850 Hz
             f = 1150.0 - 300.0 * (i / n)
             val = int(24000 * env * (0.85 * math.sin(2 * math.pi * f * t) + 0.15 * math.sin(4 * math.pi * f * t)))
             frames.extend(struct.pack("<h", max(-32767, min(32767, val))))
@@ -289,13 +267,11 @@ class SoundEffectsEngine:
         n1 = int(self.SAMPLE_RATE * 0.045)
         n2 = int(self.SAMPLE_RATE * 0.045)
         frames = bytearray()
-        # Note 1: C5
         for i in range(n1):
             t = i / self.SAMPLE_RATE
             env = math.exp(-i / (self.SAMPLE_RATE * 0.022))
             val = int(22000 * env * (0.8 * math.sin(2 * math.pi * 523.25 * t) + 0.2 * math.sin(2 * math.pi * 1046.5 * t)))
             frames.extend(struct.pack("<h", max(-32767, min(32767, val))))
-        # Note 2: E5
         for i in range(n2):
             t = i / self.SAMPLE_RATE
             env = math.exp(-i / (self.SAMPLE_RATE * 0.025))
@@ -308,13 +284,11 @@ class SoundEffectsEngine:
         n1 = int(self.SAMPLE_RATE * 0.045)
         n2 = int(self.SAMPLE_RATE * 0.045)
         frames = bytearray()
-        # Note 1: E5
         for i in range(n1):
             t = i / self.SAMPLE_RATE
             env = math.exp(-i / (self.SAMPLE_RATE * 0.022))
             val = int(22000 * env * (0.8 * math.sin(2 * math.pi * 659.25 * t) + 0.2 * math.sin(2 * math.pi * 1318.5 * t)))
             frames.extend(struct.pack("<h", max(-32767, min(32767, val))))
-        # Note 2: C5
         for i in range(n2):
             t = i / self.SAMPLE_RATE
             env = math.exp(-i / (self.SAMPLE_RATE * 0.025))
@@ -400,9 +374,10 @@ class SoundEffectsEngine:
             env = math.exp(-i / (self.SAMPLE_RATE * 0.002))
             val = int(24000 * env * math.sin(2 * math.pi * 1400.0 * t))
             frames.extend(struct.pack("<h", max(-32767, min(32767, val))))
-        # Silence gap
+        # Silence gap using integer 16-bit silence samples
         n_gap = int(self.SAMPLE_RATE * 0.010)
-        frames.extend(b"\x00\x00" * n_gap)
+        for _ in range(n_gap):
+            frames.extend(struct.pack("<h", 0))
         # Click 2 (lower release)
         n2 = int(self.SAMPLE_RATE * 0.014)
         for i in range(n2):

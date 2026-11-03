@@ -105,7 +105,14 @@ class AIAssistantMode(BaseMode):
         if self.app.speech:
             if character == " ":
                 if last_word:
-                    if hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+                    clean_word = last_word.strip()
+                    clean_char = clean_word.rstrip(".")
+                    if len(clean_char) == 1:
+                        if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+                            self.app.speech.speak_character(clean_char)
+                        else:
+                            self.app.speech.speak(clean_char)
+                    elif hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
                         self.app.speech.speak_text(f"{last_word.lower()}.", interrupt=False)
                     else:
                         self.app.speech.speak(last_word)

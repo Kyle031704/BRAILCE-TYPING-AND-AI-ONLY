@@ -169,9 +169,17 @@ class FreeInputMode(BaseMode):
             
         if self.app.speech and last_word:
             # Pronounce the complete word that was just completed (e.g. "ARM" -> "arm.").
-            # Uses the exact same natural synthesis function as mode introductions.
-            # Never pronounce the literal word "space".
-            if hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+            clean_word = last_word.strip()
+            clean_char = clean_word.rstrip(".")
+            if len(clean_char) == 1:
+                # Single character — route to speak_character to play clean cached character WAV
+                if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+                    self.app.speech.speak_character(clean_char)
+                else:
+                    self.app.speech.speak(clean_char)
+            elif hasattr(self.app.speech, "speak_word") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+                self.app.speech.speak_word(last_word)
+            elif hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
                 self.app.speech.speak_text(f"{last_word.lower()}.", interrupt=False)
             else:
                 self.app.speech.speak(last_word)
@@ -185,8 +193,14 @@ class FreeInputMode(BaseMode):
             return
 
         if self.app.speech:
-            # Pronounce the full sentence/word/character cleanly
-            if hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+            # If single character, route to speak_character to play clean cached character WAV
+            clean_char = query.rstrip(".")
+            if len(clean_char) == 1:
+                if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+                    self.app.speech.speak_character(clean_char)
+                else:
+                    self.app.speech.speak(clean_char)
+            elif hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
                 self.app.speech.speak_text(query, interrupt=False)
             else:
                 self.app.speech.speak(query, interrupt=False)

@@ -7,23 +7,25 @@ Runs locally on Raspberry Pi 5 with studio-grade human pronunciation,
 fluid co-articulation, and natural intonation.
 Uses the preferred voice model: en_US-ryan-medium.onnx.
 
-Features:
-- Instant, zero-latency playback for single characters via pre-rendered
-  WAV cache (exact same voice, pitch, and timbre as sentences).
-- Dynamic neural synthesis for completed words, sentences, math explanations,
-  and AI tutor responses.
-- Shared audio device coordination to prevent ALSA I2S DAC lockups.
+Unified Audio Pipeline:
+- Direct Piper neural synthesis for all speech: words, sentences, characters, and announcements.
+- Instant pre-cached WAV playback for single character keystroke feedback.
+- Locked VITS parameters: length_scale 1.08, noise_scale 0.5, noise_w 0.6.
+- Pure wave module silence padding (120ms pre, 150ms post).
+- Played strictly with `aplay -q <tmp_wav_path>`. Never uses `aplay -t raw`.
 """
 
 from __future__ import annotations
 
-import io
 import logging
+import math
 import os
 import queue
 import shutil
+import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import wave
@@ -33,38 +35,34 @@ from brailce.speech.audio_device import AudioDeviceCoordinator
 from brailce.speech.base import SpeechEngine
 from brailce.speech.normalizer import (
     CHARACTER_FILENAME_MAP,
-    ESPEAK_DIGIT_WORDS_TO_DIGIT,
-    ESPEAK_NAME_TO_CHAR,
-    is_keystroke_feedback,
     normalize_for_piper,
 )
 
 logger = logging.getLogger(__name__)
 
+# Standard VITS parameters for stable American English vowels and Grade 1 pacing
+PIPER_LENGTH_SCALE = "1.08"
+PIPER_NOISE_SCALE = "0.5"
+PIPER_NOISE_W = "0.6"
+
 
 def _find_cache_dir() -> Optional[str]:
     """Locate the pre-rendered character WAV audio cache directory."""
-    # 1. Project directory: brailce/audio/characters
     base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "audio", "characters"))
     if os.path.isdir(base):
         return base
-
-    # 2. Raspberry Pi standard installation location
     pi_dir = "/home/raspberrypi5/brailce/brailce/audio/characters"
     if os.path.isdir(pi_dir):
         return pi_dir
-
     return None
 
 
 def _find_piper_binary() -> Optional[str]:
     """Locate the piper binary on the system."""
-    # 1. System PATH
     found = shutil.which("piper")
     if found:
         return found
 
-    # 2. Common install locations on Raspberry Pi
     home = os.path.expanduser("~")
     candidates = [
         os.path.join(home, "piper", "piper", "piper"),
@@ -87,7 +85,6 @@ def _find_piper_model() -> Optional[str]:
         os.path.join(home, ".local", "share", "piper"),
         "/usr/local/share/piper",
     ]
-    # Preferred natural models in order of warmth (ryan-medium is default)
     preferred_names = [
         "en_US-ryan-medium.onnx",
         "en_US-bryce-medium.onnx",
@@ -101,7 +98,6 @@ def _find_piper_model() -> Optional[str]:
             p = os.path.join(d, name)
             if os.path.isfile(p):
                 return p
-        # Any .onnx file in the directory
         try:
             for f in os.listdir(d):
                 if f.endswith(".onnx"):
@@ -111,13 +107,129 @@ def _find_piper_model() -> Optional[str]:
     return None
 
 
+def _slice_longest_gap(carrier_wav: str, pre_s: float = 0.10, post_s: float = 0.15) -> bool:
+    """
+    Longest-Silence-Gap Carrier Slicer (16-bit PCM energy windowing):
+    - Synthesized audio from: "Please say. <target>." with --sentence_silence 0.55.
+    - Finds the single longest quiet run (the 550ms gap between "Please say." and <target>).
+    - Cuts 80ms inside the silence gap before <target> begins to preserve initial fricatives and sibilants.
+    - Slices to the very end of the file.
+    - Prepend 100ms and append 150ms of silence using wave module.
+    """
+    try:
+        with wave.open(carrier_wav, "rb") as wf:
+            params = wf.getparams()
+            nframes = wf.getnframes()
+            raw = wf.readframes(nframes)
+
+        if params.nchannels != 1 or params.sampwidth != 2 or nframes == 0:
+            return False
+
+        num_samples = len(raw) // 2
+        samples = struct.unpack(f"<{num_samples}h", raw)
+
+        win = int(params.framerate * 0.010)
+        if win <= 0:
+            win = 220
+
+        energies = [max(abs(s) for s in samples[i : i + win]) for i in range(0, len(samples) - win, win)]
+        num_win = len(energies)
+
+        # 1. Find first voiced window (>1500) and last voiced window (>800)
+        first_voiced = -1
+        for i in range(num_win):
+            if energies[i] > 1500:
+                first_voiced = i
+                break
+
+        last_voiced = -1
+        for i in range(num_win - 1, -1, -1):
+            if energies[i] > 800:
+                last_voiced = i
+                break
+
+        if first_voiced == -1 or last_voiced == -1 or (first_voiced + 15) >= (last_voiced - 10):
+            return False
+
+        # 2. Search between first_voiced + 15 and last_voiced - 10 for contiguous quiet windows (< 400)
+        search_start = first_voiced + 15
+        search_end = last_voiced - 10
+
+        best_start = -1
+        best_end = -1
+        max_len = 0
+
+        cur_start = -1
+        for i in range(search_start, search_end):
+            if energies[i] < 400:
+                if cur_start == -1:
+                    cur_start = i
+            else:
+                if cur_start != -1:
+                    cur_len = i - cur_start
+                    if cur_len > max_len:
+                        max_len = cur_len
+                        best_start = cur_start
+                        best_end = i
+                    cur_start = -1
+
+        if cur_start != -1:
+            cur_len = search_end - cur_start
+            if cur_len > max_len:
+                max_len = cur_len
+                best_start = cur_start
+                best_end = search_end
+
+        # Safety check: gap must be at least 12 windows (120ms)
+        if max_len < 12 or best_start == -1:
+            return False
+
+        # Cut 80ms inside the silence gap before <target> begins
+        cut_window = max(best_start, best_end - 8)
+        cut_sample = cut_window * win
+        target_samples = samples[cut_sample:]
+
+        # Safety check: target must have real voice amplitude (> 1500)
+        if not target_samples or max(abs(s) for s in target_samples) < 1500:
+            return False
+
+        target_pcm = struct.pack(f"<{len(target_samples)}h", *target_samples)
+        pre_silence = b"\x00\x00" * int(params.framerate * pre_s)
+        post_silence = b"\x00\x00" * int(params.framerate * post_s)
+        padded = pre_silence + target_pcm + post_silence
+
+        with wave.open(carrier_wav, "wb") as wf_out:
+            wf_out.setparams(params)
+            wf_out.writeframes(padded)
+
+        return True
+    except Exception as exc:
+        logger.debug("Slicing exception: %s", exc)
+        return False
+
+
+def _pad_wav_with_silence(wav_path: str, pre_ms: int = 100, post_ms: int = 150) -> None:
+    """Pad WAV file with silence using Python's wave module."""
+    try:
+        with wave.open(wav_path, "rb") as wf:
+            params = wf.getparams()
+            frames = wf.readframes(wf.getnframes())
+
+        pre_silence = b"\x00\x00" * int(params.framerate * (pre_ms / 1000.0))
+        post_silence = b"\x00\x00" * int(params.framerate * (post_ms / 1000.0))
+
+        with wave.open(wav_path, "wb") as wf:
+            wf.setparams(params)
+            wf.writeframes(pre_silence + frames + post_silence)
+    except Exception as exc:
+        logger.debug("Silence padding error: %s", exc)
+
+
 class PiperEngine(SpeechEngine):
     """
     Piper Neural TTS Engine.
-    
-    Produces smooth, studio-quality human voice completely offline
-    with negligible latency on Raspberry Pi 5.
-    Used for characters (pre-cached), words, sentences, math, and AI.
+    Direct synthesis pipeline for sentences, words, and characters with
+    wave silence padding and playback via `aplay -q`.
     """
 
     def __init__(
@@ -143,7 +255,6 @@ class PiperEngine(SpeechEngine):
         return "Piper Neural TTS (Studio Voice)"
 
     def is_available(self) -> bool:
-        """Check if piper binary and a voice model are available."""
         if not self._binary:
             self._binary = _find_piper_binary()
         if not self._model:
@@ -161,7 +272,6 @@ class PiperEngine(SpeechEngine):
         self._volume = max(0, min(100, volume))
 
     def stop(self) -> None:
-        """Immediately stop currently playing audio and drain queue."""
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
@@ -176,11 +286,13 @@ class PiperEngine(SpeechEngine):
                     pass
                 self._current_process = None
 
+    def stop_current(self) -> None:
+        self.stop()
+
     def play_cached_character(self, character: str) -> bool:
         """
-        Play pre-rendered high-fidelity Piper Ryan WAV for an individual keystroke.
-        Provides instant zero-latency feedback with the exact same voice quality,
-        timbre, and accent as full-sentence speech.
+        Instant zero-latency playback for single characters using pre-rendered WAV cache.
+        Returns True if played successfully, False if file missing.
         """
         cache_dir = _find_cache_dir()
         if not cache_dir:
@@ -199,30 +311,6 @@ class PiperEngine(SpeechEngine):
             fname = CHARACTER_FILENAME_MAP[upper]
         elif len(upper) == 1 and upper.isalnum():
             fname = f"char_{upper}.wav"
-        elif upper in ESPEAK_NAME_TO_CHAR:
-            char_key = ESPEAK_NAME_TO_CHAR[upper]
-            fname = f"char_{char_key}.wav"
-        elif upper in ESPEAK_DIGIT_WORDS_TO_DIGIT:
-            digit_key = ESPEAK_DIGIT_WORDS_TO_DIGIT[upper]
-            fname = f"char_{digit_key}.wav"
-        elif upper in ("PLUS", "MINUS", "TIMES", "DIVIDED BY", "EQUALS"):
-            name_map = {
-                "PLUS": "char_plus.wav",
-                "MINUS": "char_minus.wav",
-                "TIMES": "char_times.wav",
-                "DIVIDED BY": "char_divide.wav",
-                "EQUALS": "char_equals.wav",
-            }
-            fname = name_map[upper]
-        elif upper in ("PERIOD", "COMMA", "QUESTION MARK", "EXCLAMATION MARK", "NUMBER SIGN"):
-            name_map = {
-                "PERIOD": "char_period.wav",
-                "COMMA": "char_comma.wav",
-                "QUESTION MARK": "char_question.wav",
-                "EXCLAMATION MARK": "char_exclamation.wav",
-                "NUMBER SIGN": "char_hash.wav",
-            }
-            fname = name_map[upper]
 
         if not fname:
             return False
@@ -231,54 +319,11 @@ class PiperEngine(SpeechEngine):
         if not os.path.isfile(wav_path):
             return False
 
-        # On Linux (Raspberry Pi 5): aplay directly to MAX98357A I2S DAC
-        if sys.platform != "win32":
-            audio_lock = AudioDeviceCoordinator.get_lock()
-            with audio_lock:
-                try:
-                    proc = subprocess.Popen(
-                        ["aplay", "-q", wav_path],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                    AudioDeviceCoordinator.register_process(proc, "piper_cache")
-                    with self._lock:
-                        self._current_process = proc
-                    proc.wait(timeout=5)
-                    return True
-                except Exception as exc:
-                    logger.debug("Cached audio aplay failed: %s", exc)
-                    return False
-                finally:
-                    with self._lock:
-                        self._current_process = None
-                    AudioDeviceCoordinator.unregister_process()
-        else:
-            # On Windows: play synchronously in this thread via winsound
-            try:
-                import winsound
-                winsound.PlaySound(wav_path, winsound.SND_FILENAME)
-                return True
-            except Exception as exc:
-                logger.debug("Cached audio winsound failed: %s", exc)
-                return False
+        return AudioDeviceCoordinator.play_wav_file(wav_path, owner="piper_cache", timeout=5.0)
 
     def speak(self, text: str, interrupt: Optional[bool] = None) -> None:
-        """
-        Enqueue text for natural speech synthesis.
-        For single keystrokes with pre-rendered cache, plays immediately.
-        """
         if not text:
             return
-
-        trimmed = text.strip()
-        if not trimmed:
-            return
-
-        # Fast path: check pre-rendered character WAV cache
-        if is_keystroke_feedback(trimmed):
-            if self.play_cached_character(trimmed):
-                return
 
         normalized = normalize_for_piper(text)
         if not normalized:
@@ -287,7 +332,6 @@ class PiperEngine(SpeechEngine):
         if self._worker is None or not self._worker.is_alive():
             self._start_worker()
 
-        # Drain previous queue items ONLY if explicit interrupt requested
         if interrupt is True:
             while not self._queue.empty():
                 try:
@@ -323,6 +367,13 @@ class PiperEngine(SpeechEngine):
             self._speak_sync(text)
 
     def _speak_sync(self, text: str) -> None:
+        """
+        Synthesize speech:
+          - Single words on SPACE: synthesized via Carrier-Sentence ("Please say. <target>.")
+            and sliced at the longest 550ms silence gap, with automatic direct fallback.
+          - Multi-word sentences, AI responses, mode intros: synthesized directly.
+          - Play strictly via aplay -q <tmp_wav_path>.
+        """
         if not self.is_available():
             logger.warning("Piper not available, unable to speak: %s", text)
             return
@@ -332,104 +383,115 @@ class PiperEngine(SpeechEngine):
             return
 
         words = speech_text.split()
-        # For single words or short tokens, use 1.05 for natural non-rushed cadence
-        length_scale = "1.05" if len(words) <= 2 else "1.0"
+        is_single_word = len(words) == 1
 
-        # -------------------------------------------------------------------
-        # Piper pipeline:
-        #   piper --model model.onnx --output-raw --length-scale ...
-        #
-        # Wraps with 150ms leading silence (for I2S clock lock) and 200ms
-        # trailing silence (for DMA buffer drain), builds a standard WAV header,
-        # and streams directly to aplay so ALSA reads the exact 22050 Hz format
-        # without forcing raw flags.
-        # -------------------------------------------------------------------
-        cmd_piper = [
-            self._binary,
-            "--model", self._model,
-            "--output-raw",
-            "--length-scale", length_scale,
-        ]
+        tmp_fd = None
+        tmp_path = None
+        try:
+            tmp_fd, tmp_path = tempfile.mkstemp(prefix="brailce_piper_", suffix=".wav")
+            os.close(tmp_fd)
+            tmp_fd = None
 
-        # 150ms leading silence (6616 bytes) for MAX98357A I2S DAC clock lock
-        # 200ms trailing silence (8820 bytes) to ensure full DMA buffer drain without clipping
-        # 22050 samples/s * 2 bytes/sample = 44100 bytes/s
-        pre_silence = b"\x00" * 6616
-        post_silence = b"\x00" * 8820
+            audio_lock = AudioDeviceCoordinator.get_lock()
+            with audio_lock:
+                for attempt in range(3):
+                    p_piper = None
+                    try:
+                        if is_single_word:
+                            target_cap = speech_text.strip().capitalize()
+                            carrier_prompt = f"Please say. {target_cap}"
+                            cmd_piper = [
+                                self._binary,
+                                "--model", self._model,
+                                "--output_file", tmp_path,
+                                "--length_scale", PIPER_LENGTH_SCALE,
+                                "--noise_scale", PIPER_NOISE_SCALE,
+                                "--noise_w", PIPER_NOISE_W,
+                                "--sentence_silence", "0.55",
+                            ]
+                            p_piper = subprocess.Popen(
+                                cmd_piper,
+                                stdin=subprocess.PIPE,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                            p_piper.communicate(carrier_prompt.encode("utf-8") + b"\n", timeout=15)
 
-        audio_lock = AudioDeviceCoordinator.get_lock()
-        with audio_lock:
-            for attempt in range(3):
-                p_piper = None
-                p_aplay = None
-                try:
-                    p_piper = subprocess.Popen(
-                        cmd_piper,
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.DEVNULL,
-                    )
-                    raw_pcm, _ = p_piper.communicate(
-                        speech_text.encode("utf-8") + b"\n", timeout=15
-                    )
-                    if not raw_pcm:
-                        continue
+                            if not os.path.isfile(tmp_path) or os.path.getsize(tmp_path) == 0:
+                                time.sleep(0.08)
+                                continue
 
-                    padded_pcm = pre_silence + raw_pcm + post_silence
+                            sliced = _slice_longest_gap(tmp_path, pre_s=0.10, post_s=0.15)
+                            if not sliced:
+                                # Safety fallback: direct synthesis without carrier
+                                cmd_direct = [
+                                    self._binary,
+                                    "--model", self._model,
+                                    "--output_file", tmp_path,
+                                    "--length_scale", PIPER_LENGTH_SCALE,
+                                    "--noise_scale", PIPER_NOISE_SCALE,
+                                    "--noise_w", PIPER_NOISE_W,
+                                ]
+                                p_dir = subprocess.Popen(
+                                    cmd_direct,
+                                    stdin=subprocess.PIPE,
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL,
+                                )
+                                p_dir.communicate(speech_text.encode("utf-8") + b"\n", timeout=15)
+                                _pad_wav_with_silence(tmp_path, pre_ms=100, post_ms=150)
+                        else:
+                            # Multi-word sentence / utterance
+                            cmd_piper = [
+                                self._binary,
+                                "--model", self._model,
+                                "--output_file", tmp_path,
+                                "--length_scale", PIPER_LENGTH_SCALE,
+                                "--noise_scale", PIPER_NOISE_SCALE,
+                                "--noise_w", PIPER_NOISE_W,
+                            ]
+                            p_piper = subprocess.Popen(
+                                cmd_piper,
+                                stdin=subprocess.PIPE,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                            p_piper.communicate(speech_text.encode("utf-8") + b"\n", timeout=15)
 
-                    # Build valid WAV header with native 22050 Hz 16-bit mono
-                    wav_buf = io.BytesIO()
-                    with wave.open(wav_buf, "wb") as wf:
-                        wf.setnchannels(1)
-                        wf.setsampwidth(2)
-                        wf.setframerate(22050)
-                        wf.writeframes(padded_pcm)
-                    wav_bytes = wav_buf.getvalue()
+                            if not os.path.isfile(tmp_path) or os.path.getsize(tmp_path) == 0:
+                                time.sleep(0.08)
+                                continue
 
-                    if sys.platform != "win32":
-                        # Feed complete WAV file to aplay via stdin so ALSA reads the WAV header
-                        # directly without forcing raw -r flags that mismatch or glitch DAC buffers
-                        p_aplay = subprocess.Popen(
-                            ["aplay", "-q", "-"],
-                            stdin=subprocess.PIPE,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                        )
-                        with self._lock:
-                            self._current_process = p_aplay
-                        AudioDeviceCoordinator.register_process(p_aplay, "piper")
+                            _pad_wav_with_silence(tmp_path, pre_ms=100, post_ms=150)
 
-                        p_aplay.communicate(wav_bytes, timeout=20)
-                        if p_aplay.returncode == 0:
+                        # Play strictly with `aplay -q <tmp_path>`
+                        success = AudioDeviceCoordinator.play_wav_file(tmp_path, owner="piper", timeout=30.0)
+                        if success:
                             break
                         else:
                             time.sleep(0.08)
-                    else:
-                        # Windows simulation fallback
-                        import tempfile, winsound
-                        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
-                            t_path = tf.name
-                            tf.write(wav_bytes)
-                        winsound.PlaySound(t_path, winsound.SND_FILENAME)
-                        try:
-                            os.remove(t_path)
-                        except Exception:
-                            pass
-                        break
-                except Exception as e:
-                    logger.debug("Piper speech attempt %d failed: %s", attempt, e)
-                    time.sleep(0.08)
-                finally:
-                    if p_piper and p_piper.poll() is None:
-                        try:
-                            p_piper.kill()
-                        except Exception:
-                            pass
-                    if p_aplay and p_aplay.poll() is None:
-                        try:
-                            p_aplay.kill()
-                        except Exception:
-                            pass
-                    with self._lock:
-                        self._current_process = None
-                    AudioDeviceCoordinator.unregister_process()
+
+                    except Exception as e:
+                        logger.debug("Piper speech attempt %d failed: %s", attempt, e)
+                        time.sleep(0.08)
+                    finally:
+                        if p_piper and p_piper.poll() is None:
+                            try:
+                                p_piper.kill()
+                            except Exception:
+                                pass
+                        with self._lock:
+                            self._current_process = None
+                        AudioDeviceCoordinator.unregister_process()
+
+        finally:
+            if tmp_fd is not None:
+                try:
+                    os.close(tmp_fd)
+                except Exception:
+                    pass
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
