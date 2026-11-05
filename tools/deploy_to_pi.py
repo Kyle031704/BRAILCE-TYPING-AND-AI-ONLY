@@ -18,7 +18,24 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "paramiko"])
     import paramiko
 
-PI_HOST = os.getenv("PI_IP", "192.168.0.107")
+def get_pi_host():
+    if os.getenv("PI_IP"):
+        return os.getenv("PI_IP")
+    import socket
+    candidates = ["192.168.137.156", "192.168.0.107", "10.161.29.70"]
+    for ip in candidates:
+        try:
+            s = socket.socket()
+            s.settimeout(0.4)
+            if s.connect_ex((ip, 22)) == 0:
+                s.close()
+                return ip
+            s.close()
+        except Exception:
+            pass
+    return "192.168.137.156"
+
+PI_HOST = get_pi_host()
 PI_USER = os.getenv("PI_USER", "raspberrypi5")
 PI_PASS = os.getenv("PI_PASS", "raspberrypi5")
 REMOTE_BASE = "/home/raspberrypi5/brailce"

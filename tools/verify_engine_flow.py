@@ -2,7 +2,26 @@ import paramiko
 
 ssh = paramiko.SSHClient()
 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect('192.168.0.107', username='raspberrypi5', password='raspberrypi5', timeout=10)
+import os
+import socket
+
+def get_pi_host():
+    if os.getenv("PI_IP"):
+        return os.getenv("PI_IP")
+    for ip in ["192.168.137.156", "192.168.0.107", "10.161.29.70"]:
+        try:
+            s = socket.socket()
+            s.settimeout(0.4)
+            if s.connect_ex((ip, 22)) == 0:
+                s.close()
+                return ip
+            s.close()
+        except Exception:
+            pass
+    return "192.168.137.156"
+
+target_host = get_pi_host()
+ssh.connect(target_host, username='raspberrypi5', password='raspberrypi5', timeout=10)
 
 script = r'''
 import os
