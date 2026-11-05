@@ -22,14 +22,15 @@ def get_pi_host():
     if os.getenv("PI_IP"):
         return os.getenv("PI_IP")
     import socket
-    candidates = ["192.168.137.156", "192.168.0.107", "10.161.29.70"]
-    for ip in candidates:
+    candidates = ["192.168.137.156", "raspberrypi5.local", "192.168.0.107", "10.161.29.70"]
+    for host in candidates:
         try:
+            addr = socket.gethostbyname(host)
             s = socket.socket()
-            s.settimeout(0.4)
-            if s.connect_ex((ip, 22)) == 0:
+            s.settimeout(0.5)
+            if s.connect_ex((addr, 22)) == 0:
                 s.close()
-                return ip
+                return addr
             s.close()
         except Exception:
             pass
@@ -46,6 +47,7 @@ FILES_TO_DEPLOY = [
     "brailce/speech/service.py",
     "brailce/speech/espeak_engine.py",
     "brailce/speech/piper_engine.py",
+    "brailce/speech/filipino_engine.py",
     "brailce/speech/normalizer.py",
     "brailce/speech/audio_device.py",
     "brailce/speech/__init__.py",
@@ -72,6 +74,7 @@ FILES_TO_DEPLOY = [
     "brailce/tests/test_speech_service.py",
     "brailce/tests/test_normalizer.py",
     "brailce/tests/test_obr_engine.py",
+    "brailce/tests/test_filipino.py",
 ]
 
 
@@ -120,6 +123,19 @@ def deploy():
             rem_wav = f"{rem_char_dir}/{f}"
             sftp.put(loc_wav, rem_wav)
         print("Pre-cached character WAV files synced successfully!")
+
+    # Sync pre-cached Grade 1 Filipino audio bank WAV files
+    fil_cache_dir = os.path.join(LOCAL_BASE, "brailce", "audio", "filipino")
+    if os.path.isdir(fil_cache_dir):
+        rem_fil_dir = f"{REMOTE_BASE}/brailce/audio/filipino"
+        ssh.exec_command(f"mkdir -p '{rem_fil_dir}'")
+        wav_files = [f for f in os.listdir(fil_cache_dir) if f.endswith(".wav")]
+        print(f"\n--- Syncing {len(wav_files)} Pre-Cached Grade 1 Filipino Audio WAV Files ---")
+        for f in wav_files:
+            loc_wav = os.path.join(fil_cache_dir, f)
+            rem_wav = f"{rem_fil_dir}/{f}"
+            sftp.put(loc_wav, rem_wav)
+        print("Pre-cached Filipino WAV files synced successfully!")
 
     sftp.close()
     print("All files synchronized successfully!")
