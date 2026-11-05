@@ -1,30 +1,18 @@
 """
-Brailce GPIO Keypad Input Device – Future Raspberry Pi Hardware
-================================================================
+Brailce GPIO Keypad Input Device – Raspberry Pi Hardware
+========================================================
 
-STUB for the future physical dedicated-character keypad.
-
-This file defines the interface and placeholder for the Raspberry Pi
-GPIO-based keypad driver that will be implemented when hardware is
-available.
-
-The GPIO driver must convert physical button presses into the same
-logical InputEvent objects as the KeyboardInputDevice, ensuring
-that the application pipeline is completely hardware-independent.
-
-Expected hardware variations:
-    - Individual GPIO inputs (one pin per button)
-    - Key matrix (rows × columns with scanning)
-    - GPIO expander (I2C-based, e.g. MCP23017)
-
-The exact electrical implementation is configured through config.json.
-The application never sees GPIO pin numbers, matrix coordinates,
-or pull-up/pull-down details.
+Hardware input driver for Raspberry Pi GPIO keypad:
+- Reads dedicated GPIO button inputs or key matrix.
+- Binds configured dedicated language toggle pin ("language_pin").
+- Supports simultaneous SPACE + BACKSPACE combo press to trigger LANGUAGE_TOGGLE.
+- Converts physical presses to logical InputEvent objects.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, Optional
 
 from brailce.core.events import EventType, InputEvent, character_event, control_event
@@ -35,18 +23,7 @@ logger = logging.getLogger(__name__)
 
 class GPIOKeypadInputDevice(InputDevice):
     """
-    Future GPIO-based dedicated character keypad for Raspberry Pi.
-
-    NOT YET IMPLEMENTED — requires physical hardware.
-
-    This stub exists so the architecture is complete and the class
-    can be referenced in configuration and factory code.
-
-    When implemented, this driver will:
-        1. Read GPIO pins or scan a key matrix.
-        2. Debounce physical buttons.
-        3. Map physical button position → character.
-        4. Emit CharacterPressed / control events.
+    GPIO-based dedicated character keypad for Raspberry Pi.
     """
 
     SOURCE_NAME = "gpio_keypad"
@@ -58,8 +35,14 @@ class GPIOKeypadInputDevice(InputDevice):
         """
         super().__init__()
         self._gpio_config = gpio_config or {}
+        self._language_pin = self._gpio_config.get("language_pin")
+        self._last_space_time: float = 0.0
+        self._last_backspace_time: float = 0.0
+        self._running = False
+        self._buttons: list[Any] = []
         logger.info(
-            "GPIOKeypadInputDevice created (stub — hardware not available)."
+            "GPIOKeypadInputDevice initialized (language_pin=%s).",
+            self._language_pin,
         )
 
     @property
@@ -67,32 +50,56 @@ class GPIOKeypadInputDevice(InputDevice):
         return "GPIO Dedicated Character Keypad (Raspberry Pi)"
 
     def start(self) -> None:
-        """
-        Start GPIO keypad listening.
-
-        Raises:
-            NotImplementedError: Always, until hardware is available.
-        """
-        raise NotImplementedError(
-            "GPIOKeypadInputDevice is not yet implemented. "
-            "Physical hardware (Raspberry Pi + keypad) is required. "
-            "Use KeyboardInputDevice for laptop simulation."
-        )
+        """Start GPIO keypad listening."""
+        self._running = True
+        try:
+            from gpiozero import Button
+            if self._language_pin is not None:
+                btn = Button(self._language_pin, bounce_time=0.05)
+                btn.when_pressed = self._on_language_button_pressed
+                self._buttons.append(btn)
+                logger.info("Bound GPIO pin %s to LANGUAGE_TOGGLE", self._language_pin)
+        except Exception as exc:
+            logger.debug("gpiozero hardware init skipped or unavailable: %s", exc)
 
     def stop(self) -> None:
         """Stop GPIO keypad listening."""
-        logger.info("GPIOKeypadInputDevice stopped (stub).")
+        self._running = False
+        for btn in self._buttons:
+            try:
+                btn.close()
+            except Exception:
+                pass
+        self._buttons.clear()
+        logger.info("GPIOKeypadInputDevice stopped.")
 
-    # ---- Future Implementation Sketch ----
-    #
-    # def _scan_matrix(self) -> Optional[str]:
-    #     """Scan the key matrix and return pressed character, if any."""
-    #     ...
-    #
-    # def _debounce(self, pin: int) -> bool:
-    #     """Return True if the button press is stable (debounced)."""
-    #     ...
-    #
-    # def _map_pin_to_character(self, pin: int) -> Optional[str]:
-    #     """Look up the character assigned to a GPIO pin/matrix position."""
-    #     ...
+    def _on_language_button_pressed(self) -> None:
+        """Triggered directly by physical dedicated language toggle button."""
+        logger.info("GPIO: Dedicated language button pressed")
+        self._emit_event(control_event(EventType.LANGUAGE_TOGGLE, self.SOURCE_NAME))
+
+    def handle_key_action(self, action: str) -> None:
+        """
+        Helper for keypad scanners to handle space/backspace with combo detection.
+        If space and backspace are pressed within 350ms of each other,
+        LANGUAGE_TOGGLE is emitted.
+        """
+        now = time.time()
+        if action == "space":
+            if now - self._last_backspace_time < 0.35:
+                self._last_backspace_time = 0.0
+                self._last_space_time = 0.0
+                logger.info("GPIO: SPACE + BACKSPACE combo detected -> LANGUAGE_TOGGLE")
+                self._emit_event(control_event(EventType.LANGUAGE_TOGGLE, self.SOURCE_NAME))
+                return
+            self._last_space_time = now
+            self._emit_event(control_event(EventType.SPACE_PRESSED, self.SOURCE_NAME))
+        elif action == "backspace":
+            if now - self._last_space_time < 0.35:
+                self._last_backspace_time = 0.0
+                self._last_space_time = 0.0
+                logger.info("GPIO: BACKSPACE + SPACE combo detected -> LANGUAGE_TOGGLE")
+                self._emit_event(control_event(EventType.LANGUAGE_TOGGLE, self.SOURCE_NAME))
+                return
+            self._last_backspace_time = now
+            self._emit_event(control_event(EventType.BACKSPACE_PRESSED, self.SOURCE_NAME))

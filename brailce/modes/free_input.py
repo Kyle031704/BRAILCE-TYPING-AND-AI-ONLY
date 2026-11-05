@@ -50,8 +50,15 @@ class FreeInputMode(BaseMode):
 
     def __init__(self, app: "BrailceApp") -> None:
         super().__init__(app)
-        self.language = "en"
         self._filipino_engine: Optional[FilipinoEngine] = None
+
+    @property
+    def language(self) -> str:
+        return self.state.language
+
+    @language.setter
+    def language(self, val: str) -> None:
+        self.state.language = val
 
     @property
     def filipino_engine(self) -> FilipinoEngine:
@@ -83,6 +90,9 @@ class FreeInputMode(BaseMode):
             self._handle_clear()
         elif event.event_type == EventType.ENTER_PRESSED:
             self._handle_enter()
+        elif event.event_type == EventType.LANGUAGE_TOGGLE:
+            if hasattr(self.app, "toggle_language"):
+                self.app.toggle_language()
 
     def _handle_character(self, character: str) -> None:
         """Handle a supported character press."""

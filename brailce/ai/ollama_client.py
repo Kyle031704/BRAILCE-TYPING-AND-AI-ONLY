@@ -23,6 +23,12 @@ DEFAULT_SYSTEM_PROMPT = (
     "Always finish your sentence completely."
 )
 
+FILIPINO_SYSTEM_PROMPT = (
+    "Ikaw si Brailce, isang mabait na voice assistant para sa mga batang nag-aaral ng Grade 1 Braille. "
+    "Sumagot LAMANG sa wikang Filipino (Tagalog) gamit ang 1 hanggang 2 maiikli at kumpletong pangungusap. "
+    "Huwag magbanggit ng math maliban kung nagtatanong tungkol sa math."
+)
+
 
 class OllamaClient:
     """
@@ -97,12 +103,17 @@ class OllamaClient:
         # Neither preferred model found — do not silently substitute another model
         return None
 
-    def generate(self, prompt: str) -> Optional[str]:
+    def ask(self, prompt: str, language: str = "en") -> Optional[str]:
+        """Convenience method to query the AI model with language context."""
+        return self.generate(prompt, language=language)
+
+    def generate(self, prompt: str, language: str = "en") -> Optional[str]:
         """
         Send a generation request to the Ollama model.
         
         Args:
             prompt: The user's query.
+            language: "en" for English or "fil" for Filipino (Tagalog).
             
         Returns:
             The generated response string, or a clear spoken error message.
@@ -114,6 +125,8 @@ class OllamaClient:
         resolved = self.resolve_model()
         if not resolved:
             logger.error("Neither LiquidAI/lfm2.5-1.2b-instruct nor llama3 is installed in Ollama.")
+            if language.lower() == "fil":
+                return "Hindi naka-install ang AI model. Mangyaring i-install ang modelo."
             return "Required AI model is not installed. Please install LiquidAI or llama3."
 
         url = f"{self.host}/api/generate"
@@ -127,8 +140,9 @@ class OllamaClient:
                 "stop": ["\n\n", "User:", "Question:", "Human:"],
             }
         }
-        if self.system_prompt:
-            payload["system"] = self.system_prompt
+        effective_system = FILIPINO_SYSTEM_PROMPT if language.lower() == "fil" else self.system_prompt
+        if effective_system:
+            payload["system"] = effective_system
         data = json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")

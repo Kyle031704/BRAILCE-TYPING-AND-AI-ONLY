@@ -66,6 +66,9 @@ class ApplicationState:
     # Number indicator state (Grade 1 / UEB: # switches A-J to 1-0)
     number_mode: bool = False
 
+    # Language state ("en" or "fil")
+    language: str = "en"
+
     # System
     error_message: Optional[str] = None
     is_running: bool = True
@@ -180,6 +183,13 @@ class ApplicationState:
         """Decrease volume by step, floored at 0."""
         self.volume = max(0, self.volume - step)
         return self.volume
+
+    # ---- Language Operations ----
+
+    def toggle_language(self) -> str:
+        """Toggle between 'en' and 'fil' language modes and return the new language."""
+        self.language = "fil" if self.language == "en" else "en"
+        return self.language
 
     # ---- Braille Display Helpers ----
 

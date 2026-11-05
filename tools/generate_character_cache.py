@@ -52,7 +52,7 @@ CHARACTER_TEXT_MAP = {
     # Letters A-Z: clean lowercase letters with period
     "A": "a.", "B": "b.", "C": "c.", "D": "d.", "E": "e.", "F": "f.",
     "G": "g.", "H": "h.", "I": "i.", "J": "j.", "K": "k.", "L": "l.",
-    "M": "m.", "N": "n.", "O": "o.", "P": "p.", "Q": "q.", "R": "r.",
+    "M": "em.", "N": "en.", "O": "o.", "P": "p.", "Q": "q.", "R": "r.",
     "S": "s.", "T": "t.", "U": "u.", "V": "v.", "W": "w.", "X": "x.",
     "Y": "y.", "Z": "z.",
     # Digits 0-9
@@ -139,50 +139,27 @@ def slice_carrier_audio(samples, sr=22050):
         rms_list.append(r)
 
     total_windows = len(rms_list)
-    if total_windows < 50:
+    if total_windows < 40:
         return samples
 
-    first_voiced = 0
-    for i in range(min(50, total_windows)):
-        if rms_list[i] > 300:
-            first_voiced = i
+    first_voiced = next((i for i, r in enumerate(rms_list) if r > 300), 0)
+    last_voiced = max((i for i, r in enumerate(rms_list) if r > 500), default=total_windows - 1)
+
+    search_start = min(total_windows - 10, first_voiced + 30)
+    search_end = max(search_start + 1, last_voiced - 8)
+
+    min_win = min(range(search_start, search_end), key=lambda k: rms_list[k])
+
+    target_onset = min_win
+    for j in range(min_win, min(total_windows, min_win + 30)):
+        if rms_list[j] > 500:
+            target_onset = j
             break
 
-    search_start = min(total_windows - 10, first_voiced + int(0.40 / 0.010))
-    search_end = min(total_windows - 5, first_voiced + int(0.95 / 0.010))
-
-    if search_start >= search_end:
-        search_start = max(0, search_end - 30)
-
-    target_onset = -1
-    silence_run = 0
-
-    for i in range(search_end, search_start - 1, -1):
-        if rms_list[i] < 200:
-            silence_run += 1
-            if silence_run >= 6:
-                for j in range(i, min(total_windows, i + 35)):
-                    if rms_list[j] > 300:
-                        target_onset = j
-                        break
-                if target_onset != -1:
-                    break
-        else:
-            silence_run = 0
-
-    if target_onset == -1:
-        min_win = min(range(search_start, search_end), key=lambda k: rms_list[k])
-        for j in range(min_win, min(total_windows, min_win + 35)):
-            if rms_list[j] > 300:
-                target_onset = j
-                break
-        if target_onset == -1:
-            target_onset = min_win + 5
-
-    cut_window = max(first_voiced + 35, target_onset - 5)
+    cut_window = max(first_voiced + 25, target_onset - 4)
     cut_sample = cut_window * win
     sliced = samples[cut_sample:]
-    if not sliced or max(abs(s) for s in sliced) < 500:
+    if not sliced or len(sliced) < int(sr * 0.025) or max(abs(s) for s in sliced) < 500:
         return samples
     return sliced
 

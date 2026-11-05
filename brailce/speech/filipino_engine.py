@@ -65,6 +65,15 @@ def get_language_announcement_path(lang: str) -> Optional[str]:
     return None
 
 
+def get_thinking_audio_path() -> Optional[str]:
+    """Return path to thinking_fil.wav if it exists on disk."""
+    cache_dir = _find_filipino_audio_dir()
+    wav_path = os.path.join(cache_dir, "thinking_fil.wav")
+    if os.path.isfile(wav_path):
+        return wav_path
+    return None
+
+
 def filipino_to_phonetic(text: str) -> str:
     """
     100% Offline Filipino-to-Phonetic Transcriber.
@@ -159,6 +168,20 @@ class FilipinoEngine:
         if ann_path and os.path.isfile(ann_path):
             return AudioDeviceCoordinator.play_wav_file(ann_path, owner="filipino", timeout=5.0)
         return False
+
+    def play_thinking(self) -> bool:
+        """Play 'Nag-iisip, mangyaring maghintay' thinking clip."""
+        thinking_path = get_thinking_audio_path()
+        if thinking_path and os.path.isfile(thinking_path):
+            return AudioDeviceCoordinator.play_wav_file(thinking_path, owner="filipino_thinking", timeout=6.0)
+        if self.fallback_speech:
+            self.fallback_speech.speak("Nag-iisip, mangyaring maghintay.", interrupt=False)
+            return True
+        return False
+
+    def speak_filipino(self, text: str) -> bool:
+        """Speak Filipino text (alias for speak_sentence for vocalizing AI responses)."""
+        return self.speak_sentence(text)
 
     def speak_word(self, word: str) -> bool:
         """

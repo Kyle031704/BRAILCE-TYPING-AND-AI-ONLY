@@ -54,6 +54,10 @@ FILES_TO_DEPLOY = [
     "brailce/speech/base.py",
     # Core & Modes
     "brailce/core/app.py",
+    "brailce/core/events.py",
+    "brailce/core/state.py",
+    "brailce/input/keyboard_input.py",
+    "brailce/input/gpio_keypad.py",
     "brailce/modes/free_input.py",
     "brailce/modes/math_mode.py",
     "brailce/modes/ai_assistant.py",
@@ -148,7 +152,7 @@ def deploy():
     time.sleep(1)
 
     print("\n--- 4. Running Remote Verification Tests ---")
-    cmd_test = f"{REMOTE_BASE}/venv/bin/pytest {REMOTE_BASE}/brailce/tests/test_speech_service.py -v"
+    cmd_test = f"{REMOTE_BASE}/venv/bin/pytest {REMOTE_BASE}/brailce/tests/test_speech_service.py {REMOTE_BASE}/brailce/tests/test_filipino.py -v"
     stdin, stdout, stderr = ssh.exec_command(cmd_test)
     out = stdout.read().decode("utf-8", errors="replace")
     err = stderr.read().decode("utf-8", errors="replace")

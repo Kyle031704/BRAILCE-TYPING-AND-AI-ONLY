@@ -11,8 +11,11 @@ from brailce.speech.filipino_engine import (
     filipino_to_phonetic,
     get_filipino_word_path,
     get_language_announcement_path,
+    get_thinking_audio_path,
 )
 from brailce.modes.free_input import FreeInputMode
+from brailce.modes.ai_assistant import AIAssistantMode
+from brailce.ai.ollama_client import OllamaClient, FILIPINO_SYSTEM_PROMPT
 from brailce.core.events import EventType, InputEvent
 
 
@@ -46,6 +49,7 @@ def test_free_input_language_toggle():
     app = MagicMock()
     app.state.text_buffer = ""
     app.state.ai_processing = False
+    app.state.language = "en"
     app.config.get.return_value = True
 
     mode = FreeInputMode(app)
@@ -64,3 +68,36 @@ def test_free_input_language_toggle():
     mode.handle_event(event_enter)
 
     assert mode.language == "en"
+
+
+def test_thinking_audio_path():
+    p = get_thinking_audio_path()
+    assert p is not None
+    assert os.path.isfile(p)
+
+
+def test_dedicated_language_toggle_event():
+    app = MagicMock()
+    app.state.language = "en"
+    app.state.ai_processing = False
+    mode = FreeInputMode(app)
+
+    event_toggle = InputEvent(event_type=EventType.LANGUAGE_TOGGLE)
+    mode.handle_event(event_toggle)
+    app.toggle_language.assert_called_once()
+
+
+def test_ai_assistant_filipino_offline_response():
+    app = MagicMock()
+    app.state.language = "fil"
+    app.state.ai_query_buffer = "kumusta"
+    app.state.get_ai_query.return_value = "kumusta"
+    app.config.get.return_value = True
+
+    mode = AIAssistantMode(app)
+    mode._finish_processing = MagicMock()
+
+    mode._process_query("kumusta")
+    mode._finish_processing.assert_called_once()
+    called_response = mode._finish_processing.call_args[0][0]
+    assert "Mabuti naman ako" in called_response

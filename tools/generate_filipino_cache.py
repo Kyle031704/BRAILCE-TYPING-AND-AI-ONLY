@@ -23,7 +23,11 @@ OUTPUT_DIR = os.path.abspath(
 
 ANNOUNCEMENTS = {
     "switched_fil.wav": "Wikang Filipino.",
-    "switched_en.wav": "English language.",
+    "thinking_fil.wav": "Nag-iisip, mangyaring maghintay.",
+    "ai_kumusta.wav": "Mabuti naman ako! Masaya akong makasama ka sa pag-aaral ng Braille.",
+    "ai_pangalan.wav": "Ako si Brailce, ang iyong matalinong voice assistant para sa Braille.",
+    "ai_umaga.wav": "Magandang umaga sa iyo! Handa ka na bang mag-aral?",
+    "ai_tulong.wav": "Narito ako upang tulungan ka sa pagbasa at pagsulat ng Braille.",
 }
 
 # Top Grade 1 Filipino sight words, CVC/CVCV beginner words, pronouns, numbers, greetings
@@ -141,6 +145,8 @@ async def main() -> None:
     for i, word in enumerate(unique_words, 1):
         fname = f"word_{word}.wav"
         out_path = os.path.join(OUTPUT_DIR, fname)
+        if os.path.isfile(out_path) and os.path.getsize(out_path) > 1000:
+            continue
         # Speak word cleanly (e.g. "aso.")
         tts_text = f"{word}."
         await generate_speech_wav(tts_text, out_path)

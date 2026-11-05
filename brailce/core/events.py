@@ -62,6 +62,7 @@ class EventType(Enum):
     CLEAR_PRESSED = auto()
     MODE_PRESSED = auto()
     ENTER_PRESSED = auto()
+    LANGUAGE_TOGGLE = auto()
     VOLUME_UP = auto()
     VOLUME_DOWN = auto()
 

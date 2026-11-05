@@ -11,13 +11,27 @@ to a locally hosted Ollama LLM for offline AI responses.
 from __future__ import annotations
 
 import logging
+import os
+import re
 import threading
+from typing import Optional
 
 from brailce.core.events import AppMode, EventType, InputEvent
 from brailce.modes.base_mode import BaseMode
 from brailce.utils.validation import validate_ai_query
 
 logger = logging.getLogger(__name__)
+
+
+# Common Filipino AI greetings and answers for offline instant playback
+FILIPINO_AI_OFFLINE_RESPONSES = {
+    "kumusta": "Mabuti naman ako! Masaya akong makasama ka sa pag-aaral ng Braille.",
+    "kumusta ka": "Mabuti naman ako! Masaya akong makasama ka sa pag-aaral ng Braille.",
+    "ano ang pangalan mo": "Ako si Brailce, ang iyong matalinong voice assistant para sa Braille.",
+    "sino ka": "Ako si Brailce, ang iyong matalinong voice assistant para sa Braille.",
+    "magandang umaga": "Magandang umaga sa iyo! Handa ka na bang mag-aral?",
+    "tulong": "Narito ako upang tulungan ka sa pagbasa at pagsulat ng Braille.",
+}
 
 
 # Grade 1 Braille / UEB: Letters A-J correspond directly to numbers 1-0 under the # indicator
@@ -40,6 +54,13 @@ class AIAssistantMode(BaseMode):
     AI Assistant Mode – text query → Ollama → response → speech.
     Supports '#' number sign to enter digits using keys A-J.
     """
+
+    @property
+    def filipino_engine(self):
+        if not hasattr(self, "_filipino_engine") or self._filipino_engine is None:
+            from brailce.speech.filipino_engine import FilipinoEngine
+            self._filipino_engine = FilipinoEngine(fallback_speech=self.app.speech)
+        return self._filipino_engine
 
     @property
     def mode_type(self) -> AppMode:
@@ -67,6 +88,9 @@ class AIAssistantMode(BaseMode):
             self._handle_clear()
         elif event.event_type == EventType.ENTER_PRESSED:
             self._handle_enter()
+        elif event.event_type == EventType.LANGUAGE_TOGGLE:
+            if hasattr(self.app, "toggle_language"):
+                self.app.toggle_language()
 
     def _handle_character(self, character: str) -> None:
         # 1. Number Indicator (#) Toggle
@@ -107,15 +131,24 @@ class AIAssistantMode(BaseMode):
                 if last_word:
                     clean_word = last_word.strip()
                     clean_char = clean_word.rstrip(".")
-                    if len(clean_char) == 1:
-                        if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                            self.app.speech.speak_character(clean_char)
+                    if self.state.language == "fil":
+                        if len(clean_char) == 1:
+                            if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+                                self.app.speech.speak_character(clean_char)
+                            else:
+                                self.app.speech.speak(clean_char)
                         else:
-                            self.app.speech.speak(clean_char)
-                    elif hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                        self.app.speech.speak_text(f"{last_word.lower()}.", interrupt=False)
+                            self.filipino_engine.speak_word(clean_word)
                     else:
-                        self.app.speech.speak(last_word)
+                        if len(clean_char) == 1:
+                            if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+                                self.app.speech.speak_character(clean_char)
+                            else:
+                                self.app.speech.speak(clean_char)
+                        elif hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+                            self.app.speech.speak_text(f"{last_word.lower()}.", interrupt=False)
+                        else:
+                            self.app.speech.speak(last_word)
             elif speech_override:
                 if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
                     self.app.speech.speak_character(speech_override)
@@ -168,7 +201,16 @@ class AIAssistantMode(BaseMode):
         if self.app.display:
             self.app.display.show_ai_processing(query)
 
-        if self.app.speech:
+        if self.state.language == "fil":
+            clean_char = query.rstrip(".")
+            if len(clean_char) == 1:
+                if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
+                    self.app.speech.speak_character(clean_char)
+                elif self.app.speech:
+                    self.app.speech.speak(clean_char)
+            else:
+                self.filipino_engine.speak_sentence(query)
+        elif self.app.speech:
             if hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
                 self.app.speech.speak_text(query, interrupt=False)
             else:
@@ -178,19 +220,33 @@ class AIAssistantMode(BaseMode):
         threading.Thread(target=self._process_query, args=(query,), daemon=True).start()
 
     def _process_query(self, query: str) -> None:
-        if self.app.speech:
+        if self.state.language == "fil":
+            self.filipino_engine.play_thinking()
+        elif self.app.speech:
             if hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
                 self.app.speech.speak_text("Thinking, please wait.", interrupt=False)
             else:
                 self.app.speech.speak("Thinking, please wait.", interrupt=False)
 
+        # Check for pre-cached offline Filipino AI responses
+        if self.state.language == "fil":
+            clean_q = re.sub(r"[^a-zA-Z\s]", "", query).strip().lower()
+            clean_q = " ".join(clean_q.split())
+            if clean_q in FILIPINO_AI_OFFLINE_RESPONSES:
+                resp = FILIPINO_AI_OFFLINE_RESPONSES[clean_q]
+                logger.info("AI: Instant offline response matched for '%s'", clean_q)
+                self._finish_processing(resp, query=query)
+                return
+
         if not hasattr(self.app, "ai_client") or not self.app.ai_client:
-            self._finish_processing("AI assistant is currently unavailable.", query=query)
+            msg = "Hindi magamit ang AI assistant ngayon." if self.state.language == "fil" else "AI assistant is currently unavailable."
+            self._finish_processing(msg, query=query)
             return
 
-        response = self.app.ai_client.generate(query)
+        response = self.app.ai_client.generate(query, language=self.state.language)
         if not response:
-            self._finish_processing("AI assistant is currently unavailable.", query=query)
+            msg = "Hindi magamit ang AI assistant ngayon." if self.state.language == "fil" else "AI assistant is currently unavailable."
+            self._finish_processing(msg, query=query)
         else:
             self._finish_processing(response, query=query)
 
@@ -199,7 +255,9 @@ class AIAssistantMode(BaseMode):
         self.state.ai_last_response = response
         if self.app.display:
             self.app.display.show_ai_response(response)
-        if self.app.speech:
+        if self.state.language == "fil":
+            self.filipino_engine.speak_filipino(response)
+        elif self.app.speech:
             if hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
                 self.app.speech.speak_text(response, interrupt=False)
             else:

@@ -312,6 +312,10 @@ class BrailceApp:
             self.mode_manager.toggle()
             return
 
+        if event.event_type == EventType.LANGUAGE_TOGGLE:
+            self.toggle_language()
+            return
+
         if event.event_type == EventType.VOLUME_UP:
             new_vol = self.state.increase_volume()
             if self.display:
@@ -333,6 +337,25 @@ class BrailceApp:
         # ---- Mode-specific events ----
         if self._active_mode:
             self._active_mode.handle_event(event)
+
+    def toggle_language(self) -> str:
+        """Toggle between English ('en') and Filipino ('fil') globally."""
+        new_lang = self.state.toggle_language()
+        from brailce.speech.filipino_engine import get_language_announcement_path
+        from brailce.speech.audio_device import AudioDeviceCoordinator
+
+        status_text = "[FIL] Wikang Filipino" if new_lang == "fil" else "[EN] English"
+        if self.display:
+            self.display.show_status(status_text)
+
+        ann_path = get_language_announcement_path(new_lang)
+        if ann_path and os.path.isfile(ann_path):
+            AudioDeviceCoordinator.play_wav_file(ann_path, owner="language_toggle", timeout=5.0)
+        elif self.speech:
+            self.speech.speak_text("Wikang Filipino" if new_lang == "fil" else "English language", interrupt=True)
+
+        logger.info("Language toggled to: %s", new_lang)
+        return new_lang
 
     def _on_mode_change(self, old_mode: AppMode, new_mode: AppMode) -> None:
         """Handle mode transitions."""

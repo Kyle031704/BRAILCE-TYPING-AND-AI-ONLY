@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import sys
 import threading
+import time
 from typing import Optional, Set
 
 from brailce.core.events import (
@@ -55,8 +56,10 @@ SUPPORTED_CHARACTERS: Set[str] = (
 CONTROL_KEY_MAP = {
     # Key name from the keyboard library → EventType
     "f1": EventType.MODE_PRESSED,
-    "tab": EventType.MODE_PRESSED,
-    "f2": EventType.CLEAR_PRESSED,
+    "tab": EventType.LANGUAGE_TOGGLE,
+    "f2": EventType.LANGUAGE_TOGGLE,
+    "f3": EventType.CLEAR_PRESSED,
+    "delete": EventType.CLEAR_PRESSED,
     "f11": EventType.VOLUME_DOWN,
     "f12": EventType.VOLUME_UP,
 }
@@ -92,6 +95,8 @@ class KeyboardInputDevice(InputDevice):
         self._mode_getter = mode_getter or (lambda: AppMode.FREE_INPUT)
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._last_space_time: float = 0.0
+        self._last_backspace_time: float = 0.0
 
     @property
     def device_name(self) -> str:
@@ -178,19 +183,35 @@ class KeyboardInputDevice(InputDevice):
                 except Exception:
                     pass
             
-            if seq in ("OP", "[11~", "[[A", "O1;2P"):  # F1 key in PuTTY / xterm
+            if seq in ("OP", "[11~", "[[A", "O1;2P"):  # F1 key in PuTTY / xterm -> MODE_PRESSED
                 self._emit_event(control_event(EventType.MODE_PRESSED, self.SOURCE_NAME))
-            elif seq in ("OQ", "[12~", "[[B", "O1;2Q"):  # F2 key in PuTTY
+            elif seq in ("OQ", "[12~", "[[B", "O1;2Q"):  # F2 key in PuTTY -> LANGUAGE_TOGGLE
+                self._emit_event(control_event(EventType.LANGUAGE_TOGGLE, self.SOURCE_NAME))
+            elif seq in ("OR", "[13~", "[[C", "O1;2R"):  # F3 key in PuTTY -> CLEAR_PRESSED
                 self._emit_event(control_event(EventType.CLEAR_PRESSED, self.SOURCE_NAME))
             elif not seq:  # Pure ESC key
                 self._emit_event(control_event(EventType.QUIT, self.SOURCE_NAME))
-        elif ch in ("\t", "\x09"):  # TAB -> Switch mode!
-            self._emit_event(control_event(EventType.MODE_PRESSED, self.SOURCE_NAME))
+        elif ch in ("\t", "\x09"):  # TAB -> LANGUAGE_TOGGLE!
+            self._emit_event(control_event(EventType.LANGUAGE_TOGGLE, self.SOURCE_NAME))
         elif ch in ("\r", "\n"):  # ENTER
             self._emit_event(control_event(EventType.ENTER_PRESSED, self.SOURCE_NAME))
         elif ch in ("\x7f", "\b"):  # Backspace
+            now = time.time()
+            if now - self._last_space_time < 0.35:
+                self._last_backspace_time = 0.0
+                self._last_space_time = 0.0
+                self._emit_event(control_event(EventType.LANGUAGE_TOGGLE, self.SOURCE_NAME))
+                return
+            self._last_backspace_time = now
             self._emit_event(control_event(EventType.BACKSPACE_PRESSED, self.SOURCE_NAME))
         elif ch == " ":  # Space
+            now = time.time()
+            if now - self._last_backspace_time < 0.35:
+                self._last_backspace_time = 0.0
+                self._last_space_time = 0.0
+                self._emit_event(control_event(EventType.LANGUAGE_TOGGLE, self.SOURCE_NAME))
+                return
+            self._last_space_time = now
             self._emit_event(control_event(EventType.SPACE_PRESSED, self.SOURCE_NAME))
         else:
             upper = ch.upper()
@@ -222,12 +243,26 @@ class KeyboardInputDevice(InputDevice):
             return
 
         if key_name.lower() == "space":
+            now = time.time()
+            if now - self._last_backspace_time < 0.35:
+                self._last_backspace_time = 0.0
+                self._last_space_time = 0.0
+                self._emit_event(control_event(EventType.LANGUAGE_TOGGLE, self.SOURCE_NAME))
+                return
+            self._last_space_time = now
             self._emit_event(
                 control_event(EventType.SPACE_PRESSED, self.SOURCE_NAME)
             )
             return
 
         if key_name.lower() == "backspace":
+            now = time.time()
+            if now - self._last_space_time < 0.35:
+                self._last_backspace_time = 0.0
+                self._last_space_time = 0.0
+                self._emit_event(control_event(EventType.LANGUAGE_TOGGLE, self.SOURCE_NAME))
+                return
+            self._last_backspace_time = now
             self._emit_event(
                 control_event(EventType.BACKSPACE_PRESSED, self.SOURCE_NAME)
             )
