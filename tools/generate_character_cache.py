@@ -47,22 +47,21 @@ PI_PASS = os.getenv("PI_PASS", "raspberrypi5")
 PIPER_LENGTH_SCALE = "1.08"
 PIPER_NOISE_SCALE = "0.5"
 PIPER_NOISE_W = "0.6"
-PIPER_SENTENCE_SILENCE = "0.50"
 
 CHARACTER_TEXT_MAP = {
-    # Letters A-Z: capitalized letter with period for natural Piper carrier synthesis
-    "A": "A.", "B": "B.", "C": "C.", "D": "D.", "E": "E.", "F": "F.",
-    "G": "G.", "H": "H.", "I": "I.", "J": "J.", "K": "K.", "L": "L.",
-    "M": "M.", "N": "N.", "O": "O.", "P": "P.", "Q": "Q.", "R": "R.",
-    "S": "S.", "T": "T.", "U": "U.", "V": "V.", "W": "W.", "X": "X.",
-    "Y": "Y.", "Z": "Z.",
+    # Letters A-Z: clean lowercase letters with period
+    "A": "a.", "B": "b.", "C": "c.", "D": "d.", "E": "e.", "F": "f.",
+    "G": "g.", "H": "h.", "I": "i.", "J": "j.", "K": "k.", "L": "l.",
+    "M": "m.", "N": "n.", "O": "o.", "P": "p.", "Q": "q.", "R": "r.",
+    "S": "s.", "T": "t.", "U": "u.", "V": "v.", "W": "w.", "X": "x.",
+    "Y": "y.", "Z": "z.",
     # Digits 0-9
-    "0": "0.", "1": "1.", "2": "2.", "3": "3.", "4": "4.",
-    "5": "5.", "6": "6.", "7": "7.", "8": "8.", "9": "9.",
+    "0": "zero.", "1": "one.", "2": "two.", "3": "three.", "4": "four.",
+    "5": "five.", "6": "six.", "7": "seven.", "8": "eight.", "9": "nine.",
     # Math Operators
-    "+": "Plus.", "-": "Minus.", "*": "Times.", "/": "Divided by.", "=": "Equals.",
+    "+": "plus.", "-": "minus.", "*": "times.", "/": "divided by.", "=": "equals.",
     # Punctuation
-    ".": "Period.", ",": "Comma.", "?": "Question mark.", "!": "Exclamation mark.", "#": "Number sign.",
+    ".": "period.", ",": "comma.", "?": "question mark.", "!": "exclamation mark.", "#": "number sign.",
 }
 
 CHARACTER_FILENAME_MAP = {
@@ -107,6 +106,7 @@ def generate_on_remote_pi() -> None:
 
     remote_script = f'''
 import os
+import math
 import struct
 import wave
 import subprocess
@@ -118,7 +118,6 @@ OUT_DIR = "{remote_cache_dir}"
 LENGTH_SCALE = "{PIPER_LENGTH_SCALE}"
 NOISE_SCALE = "{PIPER_NOISE_SCALE}"
 NOISE_W = "{PIPER_NOISE_W}"
-SENTENCE_SILENCE = "{PIPER_SENTENCE_SILENCE}"
 
 CHARACTER_MAP = {{
 '''
@@ -131,35 +130,70 @@ CHARACTER_MAP = {{
 
 os.makedirs(OUT_DIR, exist_ok=True)
 
-def slice_after_carrier(samples, sr=22050):
-    # 1. Skip initial leading silence before "Please say." starts
-    start_speech = next((i for i, s in enumerate(samples) if abs(s) > 500), 0)
-    # 2. Skip the first 300ms ("Please say." is ~450-600ms long)
-    search_start = start_speech + int(sr * 0.30)
-    # 3. Find the longest contiguous run of digital silence (abs(s) < 50) AFTER search_start
-    best_len, best_end, cur_len = 0, 0, 0
-    # Only search up to 85% of the file so we NEVER touch trailing silence
-    search_limit = int(len(samples) * 0.85)
-    for i in range(search_start, search_limit):
-        if abs(samples[i]) < 50:
-            cur_len += 1
-            if cur_len > best_len:
-                best_len = cur_len
-                best_end = i
-        else:
-            cur_len = 0
-    # Cut 25ms before the end of the 500ms silence gap so initial consonants are 100% intact
-    cut_idx = max(search_start, best_end - int(sr * 0.025))
-    return samples[cut_idx:]
+def slice_carrier_audio(samples, sr=22050):
+    win = int(sr * 0.010)
+    rms_list = []
+    for i in range(0, len(samples) - win, win):
+        chunk = samples[i : i + win]
+        r = math.sqrt(sum(s * s for s in chunk) / win)
+        rms_list.append(r)
 
-def process_carrier(carrier_wav, out_path, pre_s=0.10, post_s=0.15):
+    total_windows = len(rms_list)
+    if total_windows < 50:
+        return samples
+
+    first_voiced = 0
+    for i in range(min(50, total_windows)):
+        if rms_list[i] > 300:
+            first_voiced = i
+            break
+
+    search_start = min(total_windows - 10, first_voiced + int(0.40 / 0.010))
+    search_end = min(total_windows - 5, first_voiced + int(0.95 / 0.010))
+
+    if search_start >= search_end:
+        search_start = max(0, search_end - 30)
+
+    target_onset = -1
+    silence_run = 0
+
+    for i in range(search_end, search_start - 1, -1):
+        if rms_list[i] < 200:
+            silence_run += 1
+            if silence_run >= 6:
+                for j in range(i, min(total_windows, i + 35)):
+                    if rms_list[j] > 300:
+                        target_onset = j
+                        break
+                if target_onset != -1:
+                    break
+        else:
+            silence_run = 0
+
+    if target_onset == -1:
+        min_win = min(range(search_start, search_end), key=lambda k: rms_list[k])
+        for j in range(min_win, min(total_windows, min_win + 35)):
+            if rms_list[j] > 300:
+                target_onset = j
+                break
+        if target_onset == -1:
+            target_onset = min_win + 5
+
+    cut_window = max(first_voiced + 35, target_onset - 5)
+    cut_sample = cut_window * win
+    sliced = samples[cut_sample:]
+    if not sliced or max(abs(s) for s in sliced) < 500:
+        return samples
+    return sliced
+
+def process_carrier(carrier_wav, out_path, pre_s=0.12, post_s=0.15):
     with wave.open(carrier_wav, "rb") as wf:
         params = wf.getparams()
         nframes = wf.getnframes()
         raw = wf.readframes(nframes)
 
     samples = list(struct.unpack(f"<{len(raw)//2}h", raw))
-    sliced = slice_after_carrier(samples, sr=params.framerate)
+    sliced = slice_carrier_audio(samples, sr=params.framerate)
     if not sliced or max(abs(s) for s in sliced) < 500:
         return False
 
@@ -178,9 +212,7 @@ for fname, text in CHARACTER_MAP.items():
     out_path = os.path.join(OUT_DIR, fname)
     temp_carrier = out_path + ".carrier.wav"
 
-    # Synthesize with exact carrier prompt: Please say. newline target newline
-    nl = chr(10)
-    carrier_prompt = "Please say." + nl + text.strip() + nl
+    carrier_prompt = f"Please say: {text.strip()}"
     cmd = [
         PIPER_BIN,
         "--model", PIPER_MODEL,
@@ -188,15 +220,14 @@ for fname, text in CHARACTER_MAP.items():
         "--length_scale", LENGTH_SCALE,
         "--noise_scale", NOISE_SCALE,
         "--noise_w", NOISE_W,
-        "--sentence_silence", SENTENCE_SILENCE,
     ]
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    p.communicate(carrier_prompt.encode("utf-8"))
+    p.communicate(carrier_prompt.encode("utf-8") + b"\\n")
     p.wait()
 
     success = False
     if os.path.isfile(temp_carrier) and os.path.getsize(temp_carrier) > 0:
-        success = process_carrier(temp_carrier, out_path, pre_s=0.10, post_s=0.15)
+        success = process_carrier(temp_carrier, out_path, pre_s=0.12, post_s=0.15)
 
     if os.path.exists(temp_carrier):
         os.remove(temp_carrier)
@@ -208,7 +239,7 @@ for fname, text in CHARACTER_MAP.items():
         raw = wf.readframes(nframes)
         samples = struct.unpack(f"<{len(raw)//2}h", raw)
         peak = max(abs(s) for s in samples) if samples else 0
-        method = "digital-zero-sliced" if success else "failed"
+        method = "carrier-sliced" if success else "failed"
         print(f"OK: {fname} <- {text!r} | duration={duration:.3f}s, peak={peak}, frames={nframes} ({method})")
 '''
 

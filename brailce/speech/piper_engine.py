@@ -107,36 +107,79 @@ def _find_piper_model() -> Optional[str]:
     return None
 
 
-def slice_after_carrier(samples: list[int], sr: int = 22050) -> list[int]:
+def slice_carrier_audio(samples: list[int], sr: int = 22050) -> list[int]:
     """
-    Exact Digital-Zero Carrier Split (NO RMS Guessing, NO Fallback to Raw Isolated TTS):
-    - Skip initial leading silence before "Please say." starts.
-    - Skip the first 300ms ("Please say." is ~450-600ms long).
-    - Find the longest contiguous run of digital silence (abs(s) < 50) AFTER search_start.
-    - Cut 25ms before the end of the 500ms silence gap so initial consonants are 100% intact.
+    Backward-Scanning Carrier Audio Slicer:
+    - Synthesizes: "Please say: <target>." with Piper.
+    - Scans backward in the first half of the audio (between 0.40s and 0.95s from speech onset)
+      to locate the silence gap separating "Please say:" from <target>.
+    - Cuts 50ms (5 windows) BEFORE the target word starts.
+    - Keeps 100% of remaining audio to the very end of the file.
     """
-    # 1. Skip initial leading silence before "Please say." starts
-    start_speech = next((i for i, s in enumerate(samples) if abs(s) > 500), 0)
-    # 2. Skip the first 300ms ("Please say." is ~450-600ms long)
-    search_start = start_speech + int(sr * 0.30)
-    # 3. Find the longest contiguous run of digital silence (abs(s) < 50) AFTER search_start
-    best_len, best_end, cur_len = 0, 0, 0
-    # Only search up to 85% of the file so we NEVER touch trailing silence
-    search_limit = int(len(samples) * 0.85)
-    for i in range(search_start, search_limit):
-        if abs(samples[i]) < 50:
-            cur_len += 1
-            if cur_len > best_len:
-                best_len = cur_len
-                best_end = i
+    win = int(sr * 0.010)  # 10ms window = 220 samples at 22050Hz
+    if win <= 0:
+        win = 220
+
+    rms_list = []
+    for i in range(0, len(samples) - win, win):
+        chunk = samples[i : i + win]
+        r = math.sqrt(sum(s * s for s in chunk) / win)
+        rms_list.append(r)
+
+    total_windows = len(rms_list)
+    if total_windows < 50:
+        return samples
+
+    # 1. Find start of speech for "Please say:" (RMS > 300)
+    first_voiced = 0
+    for i in range(min(50, total_windows)):
+        if rms_list[i] > 300:
+            first_voiced = i
+            break
+
+    # 2. Silence gap is located in the first half of the audio (0.40s to 0.95s from onset)
+    search_start = min(total_windows - 10, first_voiced + int(0.40 / 0.010))
+    search_end = min(total_windows - 5, first_voiced + int(0.95 / 0.010))
+
+    if search_start >= search_end:
+        search_start = max(0, search_end - 30)
+
+    # 3. Scan backward within this region to find the silence gap (at least 6 windows < 200 RMS)
+    target_onset = -1
+    silence_run = 0
+
+    for i in range(search_end, search_start - 1, -1):
+        if rms_list[i] < 200:
+            silence_run += 1
+            if silence_run >= 6:
+                for j in range(i, min(total_windows, i + 35)):
+                    if rms_list[j] > 300:
+                        target_onset = j
+                        break
+                if target_onset != -1:
+                    break
         else:
-            cur_len = 0
-    # Cut 25ms before the end of the 500ms silence gap so initial consonants are 100% intact
-    cut_idx = max(search_start, best_end - int(sr * 0.025))
-    return samples[cut_idx:]
+            silence_run = 0
+
+    if target_onset == -1:
+        min_win = min(range(search_start, search_end), key=lambda k: rms_list[k])
+        for j in range(min_win, min(total_windows, min_win + 35)):
+            if rms_list[j] > 300:
+                target_onset = j
+                break
+        if target_onset == -1:
+            target_onset = min_win + 5
+
+    # 4. Set cut point 50ms (5 windows) BEFORE the target word starts
+    cut_window = max(first_voiced + 35, target_onset - 5)
+    cut_sample = cut_window * win
+    sliced = samples[cut_sample:]
+    if not sliced or max(abs(s) for s in sliced) < 500:
+        return samples
+    return sliced
 
 
-def _process_carrier_wav(carrier_wav: str, pre_s: float = 0.10, post_s: float = 0.15) -> bool:
+def _process_carrier_wav(carrier_wav: str, pre_s: float = 0.12, post_s: float = 0.15) -> bool:
     try:
         with wave.open(carrier_wav, "rb") as wf:
             params = wf.getparams()
@@ -148,7 +191,7 @@ def _process_carrier_wav(carrier_wav: str, pre_s: float = 0.10, post_s: float = 
 
         num_samples = len(raw) // 2
         samples = list(struct.unpack(f"<{num_samples}h", raw))
-        target_samples = slice_after_carrier(samples, sr=params.framerate)
+        target_samples = slice_carrier_audio(samples, sr=params.framerate)
         if not target_samples or max(abs(s) for s in target_samples) < 500:
             return False
 
@@ -357,10 +400,8 @@ class PiperEngine(SpeechEngine):
                     p_piper = None
                     try:
                         if is_single_word:
-                            target_cap = speech_text.strip().capitalize()
-                            if not target_cap.endswith("."):
-                                target_cap += "."
-                            carrier_prompt = f"Please say.\n{target_cap}\n"
+                            target_word = speech_text.strip().rstrip(".")
+                            carrier_prompt = f"Please say: {target_word}."
                             cmd_piper = [
                                 self._binary,
                                 "--model", self._model,
@@ -368,7 +409,6 @@ class PiperEngine(SpeechEngine):
                                 "--length_scale", PIPER_LENGTH_SCALE,
                                 "--noise_scale", PIPER_NOISE_SCALE,
                                 "--noise_w", PIPER_NOISE_W,
-                                "--sentence_silence", "0.50",
                             ]
                             p_piper = subprocess.Popen(
                                 cmd_piper,
@@ -376,13 +416,13 @@ class PiperEngine(SpeechEngine):
                                 stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL,
                             )
-                            p_piper.communicate(carrier_prompt.encode("utf-8"), timeout=15)
+                            p_piper.communicate(carrier_prompt.encode("utf-8") + b"\n", timeout=15)
 
                             if not os.path.isfile(tmp_path) or os.path.getsize(tmp_path) == 0:
                                 time.sleep(0.08)
                                 continue
 
-                            sliced = _process_carrier_wav(tmp_path, pre_s=0.10, post_s=0.15)
+                            sliced = _process_carrier_wav(tmp_path, pre_s=0.12, post_s=0.15)
                             if not sliced:
                                 # Safety fallback: direct synthesis without carrier
                                 cmd_direct = [
@@ -400,7 +440,7 @@ class PiperEngine(SpeechEngine):
                                     stderr=subprocess.DEVNULL,
                                 )
                                 p_dir.communicate(speech_text.encode("utf-8") + b"\n", timeout=15)
-                                _pad_wav_with_silence(tmp_path, pre_ms=100, post_ms=150)
+                                _pad_wav_with_silence(tmp_path, pre_ms=120, post_ms=150)
                         else:
                             # Multi-word sentence / utterance
                             cmd_piper = [
