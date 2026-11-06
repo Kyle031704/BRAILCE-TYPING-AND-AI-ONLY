@@ -18,25 +18,69 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "paramiko"])
     import paramiko
 
-def get_pi_host():
+def _probe_ip(ip, port=22, timeout=0.3):
+    import socket
+    s = socket.socket()
+    s.settimeout(timeout)
+    try:
+        if s.connect_ex((ip, port)) == 0:
+            s.close()
+            return ip
+    except Exception:
+        pass
+    s.close()
+    return None
+
+def find_pi_ip():
     if os.getenv("PI_IP"):
         return os.getenv("PI_IP")
+
     import socket
-    candidates = ["192.168.137.156", "raspberrypi5.local", "192.168.0.107", "10.161.29.70"]
-    for host in candidates:
+    import concurrent.futures
+
+    # Direct hostnames and known IPs
+    priority = ["192.168.137.156", "raspberrypi5.local", "raspberrypi.local", "10.161.29.70"]
+    for host in priority:
         try:
             addr = socket.gethostbyname(host)
-            s = socket.socket()
-            s.settimeout(0.5)
-            if s.connect_ex((addr, 22)) == 0:
-                s.close()
+            if _probe_ip(addr):
                 return addr
-            s.close()
         except Exception:
             pass
+
+    # Fast scan of Hotspot subnet (192.168.137.x) and Wi-Fi subnet (192.168.0.x)
+    subnets = ["192.168.137", "192.168.0"]
+    candidates = [f"{sub}.{i}" for sub in subnets for i in range(2, 255)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=60) as ex:
+        for res in ex.map(lambda ip: _probe_ip(ip, 22, 0.25), candidates):
+            if res:
+                return res
+
+    return None
+
+def get_pi_host(max_wait_seconds=25):
+    print("Searching for Raspberry Pi 5 on the network...")
+    ip = find_pi_ip()
+    if ip:
+        print(f"Found Raspberry Pi 5 at {ip}!")
+        return ip
+
+    print("Pi not found immediately. Polling for connection...")
+    print(">> NOTE: Please make sure Windows Mobile Hotspot is turned ON in Settings/Quick Settings! <<")
+    start = time.time()
+    while time.time() - start < max_wait_seconds:
+        time.sleep(2)
+        ip = find_pi_ip()
+        if ip:
+            print(f"\n[CONNECTED] Raspberry Pi 5 detected at {ip}!")
+            return ip
+        remaining = int(max_wait_seconds - (time.time() - start))
+        print(f"  Waiting for Pi to connect... ({remaining}s remaining)", end="\r", flush=True)
+
+    print("\nCould not detect Pi automatically after timeout. Defaulting to 192.168.137.156.")
     return "192.168.137.156"
 
-PI_HOST = get_pi_host()
+PI_HOST = None  # Resolved inside deploy()
 PI_USER = os.getenv("PI_USER", "raspberrypi5")
 PI_PASS = os.getenv("PI_PASS", "raspberrypi5")
 REMOTE_BASE = "/home/raspberrypi5/brailce"
@@ -79,11 +123,15 @@ FILES_TO_DEPLOY = [
     "brailce/tests/test_normalizer.py",
     "brailce/tests/test_obr_engine.py",
     "brailce/tests/test_filipino.py",
+    "brailce/tests/test_input.py",
 ]
 
 
 def deploy():
-    print(f"Connecting to Raspberry Pi 5 at {PI_HOST} (user: {PI_USER})...")
+    global PI_HOST
+    if not PI_HOST:
+        PI_HOST = get_pi_host()
+    print(f"\nConnecting to Raspberry Pi 5 at {PI_HOST} (user: {PI_USER})...")
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
@@ -115,31 +163,45 @@ def deploy():
         print(f"  Uploading: {rel} -> {rem}")
         sftp.put(loc, rem)
 
-    # Sync pre-cached Piper character WAV audio files
+    # Sync pre-cached Piper character WAV audio files (only if size differs)
     char_cache_dir = os.path.join(LOCAL_BASE, "brailce", "audio", "characters")
     if os.path.isdir(char_cache_dir):
         rem_char_dir = f"{REMOTE_BASE}/brailce/audio/characters"
         ssh.exec_command(f"mkdir -p '{rem_char_dir}'")
+        try:
+            remote_char_files = {attr.filename: attr.st_size for attr in sftp.listdir_attr(rem_char_dir)}
+        except Exception:
+            remote_char_files = {}
         wav_files = [f for f in os.listdir(char_cache_dir) if f.endswith(".wav")]
-        print(f"\n--- Syncing {len(wav_files)} Pre-Cached Piper Character Audio WAV Files ---")
+        uploaded_chars = 0
         for f in wav_files:
             loc_wav = os.path.join(char_cache_dir, f)
             rem_wav = f"{rem_char_dir}/{f}"
-            sftp.put(loc_wav, rem_wav)
-        print("Pre-cached character WAV files synced successfully!")
+            loc_size = os.path.getsize(loc_wav)
+            if remote_char_files.get(f) != loc_size:
+                sftp.put(loc_wav, rem_wav)
+                uploaded_chars += 1
+        print(f"Character audio sync: {uploaded_chars} updated / {len(wav_files)} verified.")
 
-    # Sync pre-cached Grade 1 Filipino audio bank WAV files
+    # Sync pre-cached Grade 1 Filipino audio bank WAV files (only if size differs)
     fil_cache_dir = os.path.join(LOCAL_BASE, "brailce", "audio", "filipino")
     if os.path.isdir(fil_cache_dir):
         rem_fil_dir = f"{REMOTE_BASE}/brailce/audio/filipino"
         ssh.exec_command(f"mkdir -p '{rem_fil_dir}'")
+        try:
+            remote_fil_files = {attr.filename: attr.st_size for attr in sftp.listdir_attr(rem_fil_dir)}
+        except Exception:
+            remote_fil_files = {}
         wav_files = [f for f in os.listdir(fil_cache_dir) if f.endswith(".wav")]
-        print(f"\n--- Syncing {len(wav_files)} Pre-Cached Grade 1 Filipino Audio WAV Files ---")
+        uploaded_fil = 0
         for f in wav_files:
             loc_wav = os.path.join(fil_cache_dir, f)
             rem_wav = f"{rem_fil_dir}/{f}"
-            sftp.put(loc_wav, rem_wav)
-        print("Pre-cached Filipino WAV files synced successfully!")
+            loc_size = os.path.getsize(loc_wav)
+            if remote_fil_files.get(f) != loc_size:
+                sftp.put(loc_wav, rem_wav)
+                uploaded_fil += 1
+        print(f"Filipino audio sync: {uploaded_fil} updated / {len(wav_files)} verified.")
 
     sftp.close()
     print("All files synchronized successfully!")
@@ -152,7 +214,7 @@ def deploy():
     time.sleep(1)
 
     print("\n--- 4. Running Remote Verification Tests ---")
-    cmd_test = f"{REMOTE_BASE}/venv/bin/pytest {REMOTE_BASE}/brailce/tests/test_speech_service.py {REMOTE_BASE}/brailce/tests/test_filipino.py -v"
+    cmd_test = f"{REMOTE_BASE}/venv/bin/pytest {REMOTE_BASE}/brailce/tests/test_speech_service.py {REMOTE_BASE}/brailce/tests/test_filipino.py {REMOTE_BASE}/brailce/tests/test_input.py -v"
     stdin, stdout, stderr = ssh.exec_command(cmd_test)
     out = stdout.read().decode("utf-8", errors="replace")
     err = stderr.read().decode("utf-8", errors="replace")

@@ -71,6 +71,11 @@ class EventType(Enum):
     ERROR = auto()
 
 
+# Aliases for Mode Change event names
+EventType.MODE_CHANGE = EventType.MODE_PRESSED
+EventType.NEXT_MODE = EventType.MODE_PRESSED
+
+
 # ---------------------------------------------------------------------------
 # Event Data Classes
 # ---------------------------------------------------------------------------

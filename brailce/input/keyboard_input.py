@@ -56,7 +56,11 @@ SUPPORTED_CHARACTERS: Set[str] = (
 CONTROL_KEY_MAP = {
     # Key name from the keyboard library → EventType
     "f1": EventType.MODE_PRESSED,
-    "tab": EventType.LANGUAGE_TOGGLE,
+    "tab": EventType.MODE_PRESSED,
+    "`": EventType.LANGUAGE_TOGGLE,
+    "~": EventType.LANGUAGE_TOGGLE,
+    "grave": EventType.LANGUAGE_TOGGLE,
+    "backquote": EventType.LANGUAGE_TOGGLE,
     "f2": EventType.LANGUAGE_TOGGLE,
     "f3": EventType.CLEAR_PRESSED,
     "delete": EventType.CLEAR_PRESSED,
@@ -171,7 +175,12 @@ class KeyboardInputDevice(InputDevice):
 
     def _process_char(self, ch: str) -> None:
         """Convert a character from terminal input to an InputEvent."""
-        if ch == "\x1b":
+        if ch == "\x03":  # Ctrl+C -> clean exit so PuTTY never gets stuck
+            logger.info("Terminal listener: Ctrl+C received, emitting QUIT")
+            self._running = False
+            self._emit_event(control_event(EventType.QUIT, self.SOURCE_NAME))
+            return
+        elif ch == "\x1b":
             # Check if this is an escape sequence (e.g. F1, F2 in PuTTY)
             import sys
             seq = ""
@@ -191,11 +200,13 @@ class KeyboardInputDevice(InputDevice):
                 self._emit_event(control_event(EventType.CLEAR_PRESSED, self.SOURCE_NAME))
             elif not seq:  # Pure ESC key
                 self._emit_event(control_event(EventType.QUIT, self.SOURCE_NAME))
-        elif ch in ("\t", "\x09"):  # TAB -> LANGUAGE_TOGGLE!
+        elif ch in ("\t", "\x09"):  # TAB -> Change Mode (cycles Free Input -> Math -> AI -> Scanner)
+            self._emit_event(control_event(EventType.MODE_PRESSED, self.SOURCE_NAME))
+        elif ch in ("`", "~"):  # Backtick / Tilde -> Toggle Language ([EN] <-> [FIL])
             self._emit_event(control_event(EventType.LANGUAGE_TOGGLE, self.SOURCE_NAME))
-        elif ch in ("\r", "\n"):  # ENTER
+        elif ch in ("\r", "\n"):  # ENTER / Confirm
             self._emit_event(control_event(EventType.ENTER_PRESSED, self.SOURCE_NAME))
-        elif ch in ("\x7f", "\b"):  # Backspace
+        elif ch in ("\x7f", "\x08", "\b"):  # Backspace
             now = time.time()
             if now - self._last_space_time < 0.35:
                 self._last_backspace_time = 0.0

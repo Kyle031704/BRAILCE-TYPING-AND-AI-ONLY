@@ -125,6 +125,63 @@ class TestKeyboardInputDevice:
         assert len(received) == 1
         assert received[0].event_type == EventType.MODE_PRESSED
 
+    def test_tab_key_press_triggers_mode(self, device: KeyboardInputDevice) -> None:
+        received = []
+        device.register_callback(lambda e: received.append(e))
+        
+        mock_event = MagicMock()
+        mock_event.name = "tab"
+        
+        device._on_key_press(mock_event)
+        
+        assert len(received) == 1
+        assert received[0].event_type == EventType.MODE_PRESSED
+
+    def test_grave_key_press_triggers_language_toggle(self, device: KeyboardInputDevice) -> None:
+        received = []
+        device.register_callback(lambda e: received.append(e))
+        
+        mock_event = MagicMock()
+        mock_event.name = "`"
+        
+        device._on_key_press(mock_event)
+        
+        assert len(received) == 1
+        assert received[0].event_type == EventType.LANGUAGE_TOGGLE
+
+    def test_terminal_process_char_putty_mappings(self, device: KeyboardInputDevice) -> None:
+        received = []
+        device.register_callback(lambda e: received.append(e))
+
+        # TAB -> MODE_PRESSED
+        device._process_char("\t")
+        assert received[-1].event_type == EventType.MODE_PRESSED
+
+        # Backtick -> LANGUAGE_TOGGLE
+        device._process_char("`")
+        assert received[-1].event_type == EventType.LANGUAGE_TOGGLE
+
+        # Tilde -> LANGUAGE_TOGGLE
+        device._process_char("~")
+        assert received[-1].event_type == EventType.LANGUAGE_TOGGLE
+
+        # Space -> SPACE_PRESSED
+        device._process_char(" ")
+        assert received[-1].event_type == EventType.SPACE_PRESSED
+
+        # Enter -> ENTER_PRESSED
+        device._process_char("\r")
+        assert received[-1].event_type == EventType.ENTER_PRESSED
+
+        # Character -> CHARACTER_PRESSED
+        device._process_char("a")
+        assert received[-1].event_type == EventType.CHARACTER_PRESSED
+        assert received[-1].character == "A"
+
+        # Ctrl+C -> QUIT
+        device._process_char("\x03")
+        assert received[-1].event_type == EventType.QUIT
+
     def test_unsupported_key_ignored(self, device: KeyboardInputDevice) -> None:
         received = []
         device.register_callback(lambda e: received.append(e))
