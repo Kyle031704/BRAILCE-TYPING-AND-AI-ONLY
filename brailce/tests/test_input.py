@@ -193,6 +193,17 @@ class TestKeyboardInputDevice:
         
         assert len(received) == 0
 
+    def test_callback_exception_does_not_crash_input_device(self, device: KeyboardInputDevice) -> None:
+        """Verify that an unhandled exception inside event callback does not crash input loop."""
+        def faulty_callback(event):
+            raise RuntimeError("Simulated callback failure")
+
+        device.register_callback(faulty_callback)
+        # Should not raise exception
+        device._process_char("`")
+        device._process_char("\t")
+        device._process_char("a")
+
     @patch("brailce.input.keyboard_input.kb", create=True)
     def test_start_hooks_keyboard(self, mock_kb: MagicMock) -> None:
         """Test that start() registers the keyboard hook."""

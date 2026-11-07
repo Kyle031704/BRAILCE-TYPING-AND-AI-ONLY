@@ -50,12 +50,19 @@ class InputDevice(abc.ABC):
 
     def _emit_event(self, event: InputEvent) -> None:
         """
-        Dispatch an event to the registered callback.
+        Dispatch an event to the registered callback safely.
 
         Subclasses call this to deliver logical events to the application.
+        Exceptions in the callback are caught and logged so input threads never die.
         """
         if self._callback is not None:
-            self._callback(event)
+            try:
+                self._callback(event)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).error(
+                    "Input dispatch error for event %s: %s", event, exc, exc_info=True
+                )
 
     @abc.abstractmethod
     def start(self) -> None:

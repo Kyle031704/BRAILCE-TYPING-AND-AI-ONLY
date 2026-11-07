@@ -300,43 +300,46 @@ class BrailceApp:
         Dispatches input events to the appropriate handler
         based on event type and current mode.
         """
-        logger.debug("Event received: %s", event)
+        try:
+            logger.debug("Event received: %s", event)
 
-        # ---- System-level events ----
-        if event.event_type == EventType.QUIT:
-            logger.info("Quit event received.")
-            self.state.is_running = False
-            return
+            # ---- System-level events ----
+            if event.event_type == EventType.QUIT:
+                logger.info("Quit event received.")
+                self.state.is_running = False
+                return
 
-        if event.event_type == EventType.MODE_PRESSED:
-            self.mode_manager.toggle()
-            return
+            if event.event_type == EventType.MODE_PRESSED:
+                self.mode_manager.toggle()
+                return
 
-        if event.event_type == EventType.LANGUAGE_TOGGLE:
-            self.toggle_language()
-            return
+            if event.event_type == EventType.LANGUAGE_TOGGLE:
+                self.toggle_language()
+                return
 
-        if event.event_type == EventType.VOLUME_UP:
-            new_vol = self.state.increase_volume()
-            if self.display:
-                self.display.show_status(f"Volume: {new_vol}")
-            if self.speech:
-                self.speech.set_volume(new_vol)
-                self.speech.speak_text(f"Volume {new_vol} percent", interrupt=True)
-            return
+            if event.event_type == EventType.VOLUME_UP:
+                new_vol = self.state.increase_volume()
+                if self.display:
+                    self.display.show_status(f"Volume: {new_vol}")
+                if self.speech:
+                    self.speech.set_volume(new_vol)
+                    self.speech.speak_text(f"Volume {new_vol} percent", interrupt=True)
+                return
 
-        if event.event_type == EventType.VOLUME_DOWN:
-            new_vol = self.state.decrease_volume()
-            if self.display:
-                self.display.show_status(f"Volume: {new_vol}")
-            if self.speech:
-                self.speech.set_volume(new_vol)
-                self.speech.speak_text(f"Volume {new_vol} percent", interrupt=True)
-            return
+            if event.event_type == EventType.VOLUME_DOWN:
+                new_vol = self.state.decrease_volume()
+                if self.display:
+                    self.display.show_status(f"Volume: {new_vol}")
+                if self.speech:
+                    self.speech.set_volume(new_vol)
+                    self.speech.speak_text(f"Volume {new_vol} percent", interrupt=True)
+                return
 
-        # ---- Mode-specific events ----
-        if self._active_mode:
-            self._active_mode.handle_event(event)
+            # ---- Mode-specific events ----
+            if self._active_mode:
+                self._active_mode.handle_event(event)
+        except Exception as exc:
+            logger.error("Error handling input event %s: %s", event, exc, exc_info=True)
 
     def toggle_language(self) -> str:
         """Toggle between English ('en') and Filipino ('fil') globally."""
@@ -350,7 +353,13 @@ class BrailceApp:
 
         ann_path = get_language_announcement_path(new_lang)
         if ann_path and os.path.isfile(ann_path):
-            AudioDeviceCoordinator.play_wav_file(ann_path, owner="language_toggle", timeout=5.0)
+            import threading
+            threading.Thread(
+                target=AudioDeviceCoordinator.play_wav_file,
+                args=(ann_path, "language_toggle", 5.0),
+                daemon=True,
+                name="brailce-lang-toggle-audio"
+            ).start()
         elif self.speech:
             self.speech.speak_text("Wikang Filipino" if new_lang == "fil" else "English language", interrupt=True)
 

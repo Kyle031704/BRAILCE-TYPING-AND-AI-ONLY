@@ -4,19 +4,26 @@ Automated Deployment Script to Raspberry Pi 5
 
 Uploads updated Brailce code, speech services, and configs to the Raspberry Pi 5,
 cleans cache, and runs remote verification.
+Supports PuTTY's pscp/plink natively on Windows as well as paramiko.
 """
 
 import os
+import subprocess
 import sys
 import time
 
-try:
-    import paramiko
-except ImportError:
-    print("Paramiko not found. Installing paramiko...")
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "paramiko"])
-    import paramiko
+PUTTY_DIR = r"C:\Program Files\PuTTY"
+PLINK_EXE = os.path.join(PUTTY_DIR, "plink.exe") if os.path.isdir(PUTTY_DIR) else "plink"
+PSCP_EXE = os.path.join(PUTTY_DIR, "pscp.exe") if os.path.isdir(PUTTY_DIR) else "pscp"
+
+HAVE_PUTTY = os.path.isfile(PLINK_EXE) and os.path.isfile(PSCP_EXE)
+
+paramiko = None
+if not HAVE_PUTTY:
+    try:
+        import paramiko
+    except ImportError:
+        pass
 
 def _probe_ip(ip, port=22, timeout=0.3):
     import socket
@@ -102,6 +109,7 @@ FILES_TO_DEPLOY = [
     "brailce/core/state.py",
     "brailce/input/keyboard_input.py",
     "brailce/input/gpio_keypad.py",
+    "brailce/input/base.py",
     "brailce/modes/free_input.py",
     "brailce/modes/math_mode.py",
     "brailce/modes/ai_assistant.py",
@@ -118,119 +126,104 @@ FILES_TO_DEPLOY = [
     "brailce/braille/mappings/numbers.json",
     "brailce/braille/mappings/math.json",
     "brailce/braille/mappings/punctuation.json",
-    # Tests
+    # Tests & Utils
+    "brailce/utils/system_checks.py",
     "brailce/tests/test_speech_service.py",
     "brailce/tests/test_normalizer.py",
     "brailce/tests/test_obr_engine.py",
     "brailce/tests/test_filipino.py",
     "brailce/tests/test_input.py",
+    "brailce/tests/test_speech.py",
 ]
+
+
+def run_remote_plink(host: str, user: str, password: str, cmd: str) -> str:
+    """Execute command on Pi using PuTTY plink."""
+    p = subprocess.run(
+        [PLINK_EXE, "-batch", "-pw", password, f"{user}@{host}", cmd],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if p.stdout:
+        print(p.stdout)
+    if p.stderr and ("error" in p.stderr.lower() or "fatal" in p.stderr.lower()):
+        print("[REMOTE STDERR]:", p.stderr)
+    return p.stdout
+
+
+def deploy_via_putty(host: str, user: str, password: str) -> None:
+    print(f"\n--- 1. Uploading Files via PuTTY PSCP to {user}@{host} ---")
+    for rel in FILES_TO_DEPLOY:
+        loc = os.path.join(LOCAL_BASE, rel.replace("/", os.sep))
+        rem = f"{REMOTE_BASE}/{rel}"
+        if not os.path.exists(loc):
+            continue
+        rem_dir = os.path.dirname(rem)
+        run_remote_plink(host, user, password, f"mkdir -p '{rem_dir}'")
+        print(f"  Uploading: {rel} -> {rem}")
+        subprocess.run(
+            [PSCP_EXE, "-batch", "-pw", password, loc, f"{user}@{host}:{rem}"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+
+    print("\n--- 2. Clearing Remote __pycache__ ---")
+    run_remote_plink(host, user, password, f"find {REMOTE_BASE} -type d -name '__pycache__' -exec rm -rf {{}} + 2>/dev/null")
+
+    print("\n--- 3. Stopping In-Flight Audio / Brailce Processes ---")
+    run_remote_plink(host, user, password, "pkill -9 -f 'python3.*brailce' 2>/dev/null; pkill -9 -f piper 2>/dev/null; pkill -9 -f aplay 2>/dev/null")
+    time.sleep(1)
+
+    print("\n--- 4. Running Remote Verification Tests ---")
+    cmd_test = f"{REMOTE_BASE}/venv/bin/pytest {REMOTE_BASE}/brailce/tests/test_speech_service.py {REMOTE_BASE}/brailce/tests/test_filipino.py {REMOTE_BASE}/brailce/tests/test_input.py {REMOTE_BASE}/brailce/tests/test_speech.py -v"
+    run_remote_plink(host, user, password, cmd_test)
 
 
 def deploy():
     global PI_HOST
     if not PI_HOST:
         PI_HOST = get_pi_host()
-    print(f"\nConnecting to Raspberry Pi 5 at {PI_HOST} (user: {PI_USER})...")
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
-    try:
-        ssh.connect(PI_HOST, username=PI_USER, password=PI_PASS, timeout=8)
-    except Exception as exc:
-        print(f"\n[ERROR] Could not connect to {PI_HOST}: {exc}")
-        print("Tip: If the Raspberry Pi IP address changed, set PI_IP, for example:")
-        print("    set PI_IP=192.168.0.xxx; python tools/deploy_to_pi.py")
+    if HAVE_PUTTY:
+        print(f"Using PuTTY PSCP/PLINK for deployment to {PI_HOST}...")
+        deploy_via_putty(PI_HOST, PI_USER, PI_PASS)
+    elif paramiko:
+        print(f"Connecting to Raspberry Pi 5 at {PI_HOST} via Paramiko...")
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            ssh.connect(PI_HOST, username=PI_USER, password=PI_PASS, timeout=8)
+        except Exception as exc:
+            print(f"\n[ERROR] Could not connect to {PI_HOST}: {exc}")
+            sys.exit(1)
+        sftp = ssh.open_sftp()
+        for rel in FILES_TO_DEPLOY:
+            loc = os.path.join(LOCAL_BASE, rel.replace("/", os.sep))
+            rem = f"{REMOTE_BASE}/{rel}"
+            if os.path.exists(loc):
+                ssh.exec_command(f"mkdir -p '{os.path.dirname(rem)}'")
+                sftp.put(loc, rem)
+        sftp.close()
+        ssh.exec_command(f"find {REMOTE_BASE} -type d -name '__pycache__' -exec rm -rf {{}} + 2>/dev/null")
+        ssh.exec_command("pkill -9 -f 'python3.*brailce' 2>/dev/null; pkill -9 -f piper 2>/dev/null; pkill -9 -f aplay 2>/dev/null")
+        stdin, stdout, stderr = ssh.exec_command(f"{REMOTE_BASE}/venv/bin/pytest {REMOTE_BASE}/brailce/tests/test_speech_service.py {REMOTE_BASE}/brailce/tests/test_filipino.py {REMOTE_BASE}/brailce/tests/test_input.py {REMOTE_BASE}/brailce/tests/test_speech.py -v")
+        print(stdout.read().decode("utf-8", errors="replace"))
+        ssh.close()
+    else:
+        print("[ERROR] Neither PuTTY (pscp/plink) nor paramiko found!")
         sys.exit(1)
-
-    print("Connected successfully!")
-    sftp = ssh.open_sftp()
-
-    print("\n--- 1. Uploading Updated Files ---")
-    for rel in FILES_TO_DEPLOY:
-        loc = os.path.join(LOCAL_BASE, rel.replace("/", os.sep))
-        rem = f"{REMOTE_BASE}/{rel}"
-        if not os.path.exists(loc):
-            print(f"Skipping missing local file: {rel}")
-            continue
-
-        rem_dir = os.path.dirname(rem)
-        try:
-            ssh.exec_command(f"mkdir -p '{rem_dir}'")
-        except Exception:
-            pass
-
-        print(f"  Uploading: {rel} -> {rem}")
-        sftp.put(loc, rem)
-
-    # Sync pre-cached Piper character WAV audio files (only if size differs)
-    char_cache_dir = os.path.join(LOCAL_BASE, "brailce", "audio", "characters")
-    if os.path.isdir(char_cache_dir):
-        rem_char_dir = f"{REMOTE_BASE}/brailce/audio/characters"
-        ssh.exec_command(f"mkdir -p '{rem_char_dir}'")
-        try:
-            remote_char_files = {attr.filename: attr.st_size for attr in sftp.listdir_attr(rem_char_dir)}
-        except Exception:
-            remote_char_files = {}
-        wav_files = [f for f in os.listdir(char_cache_dir) if f.endswith(".wav")]
-        uploaded_chars = 0
-        for f in wav_files:
-            loc_wav = os.path.join(char_cache_dir, f)
-            rem_wav = f"{rem_char_dir}/{f}"
-            loc_size = os.path.getsize(loc_wav)
-            if remote_char_files.get(f) != loc_size:
-                sftp.put(loc_wav, rem_wav)
-                uploaded_chars += 1
-        print(f"Character audio sync: {uploaded_chars} updated / {len(wav_files)} verified.")
-
-    # Sync pre-cached Grade 1 Filipino audio bank WAV files (only if size differs)
-    fil_cache_dir = os.path.join(LOCAL_BASE, "brailce", "audio", "filipino")
-    if os.path.isdir(fil_cache_dir):
-        rem_fil_dir = f"{REMOTE_BASE}/brailce/audio/filipino"
-        ssh.exec_command(f"mkdir -p '{rem_fil_dir}'")
-        try:
-            remote_fil_files = {attr.filename: attr.st_size for attr in sftp.listdir_attr(rem_fil_dir)}
-        except Exception:
-            remote_fil_files = {}
-        wav_files = [f for f in os.listdir(fil_cache_dir) if f.endswith(".wav")]
-        uploaded_fil = 0
-        for f in wav_files:
-            loc_wav = os.path.join(fil_cache_dir, f)
-            rem_wav = f"{rem_fil_dir}/{f}"
-            loc_size = os.path.getsize(loc_wav)
-            if remote_fil_files.get(f) != loc_size:
-                sftp.put(loc_wav, rem_wav)
-                uploaded_fil += 1
-        print(f"Filipino audio sync: {uploaded_fil} updated / {len(wav_files)} verified.")
-
-    sftp.close()
-    print("All files synchronized successfully!")
-
-    print("\n--- 2. Clearing Remote __pycache__ ---")
-    ssh.exec_command(f"find {REMOTE_BASE} -type d -name '__pycache__' -exec rm -rf {{}} + 2>/dev/null")
-
-    print("\n--- 3. Stopping In-Flight Audio / Brailce Processes ---")
-    ssh.exec_command("pkill -9 -f 'python3.*brailce' 2>/dev/null; pkill -9 -f piper 2>/dev/null; pkill -9 -f aplay 2>/dev/null")
-    time.sleep(1)
-
-    print("\n--- 4. Running Remote Verification Tests ---")
-    cmd_test = f"{REMOTE_BASE}/venv/bin/pytest {REMOTE_BASE}/brailce/tests/test_speech_service.py {REMOTE_BASE}/brailce/tests/test_filipino.py {REMOTE_BASE}/brailce/tests/test_input.py -v"
-    stdin, stdout, stderr = ssh.exec_command(cmd_test)
-    out = stdout.read().decode("utf-8", errors="replace")
-    err = stderr.read().decode("utf-8", errors="replace")
-    print(out)
-    if err and "FAILED" in err:
-        print("[STDERR]:", err)
 
     print("\n=======================================================")
     print("DEPLOYMENT COMPLETE!")
-    print(f"To run Brailce interactively on the Raspberry Pi, run:")
-    print(f"    ssh {PI_USER}@{PI_HOST}")
+    print(f"To run Brailce interactively on the Raspberry Pi, run in PuTTY:")
     print(f"    cd {REMOTE_BASE}")
     print(f"    source venv/bin/activate")
     print(f"    python3 main.py")
     print("=======================================================")
-    ssh.close()
 
 
 if __name__ == "__main__":

@@ -30,6 +30,7 @@ def check_espeak() -> SystemCheck:
         try:
             result = subprocess.run(
                 [cmd, "--version"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=5,

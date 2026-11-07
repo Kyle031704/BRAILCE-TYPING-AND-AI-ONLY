@@ -112,6 +112,7 @@ class AudioDeviceCoordinator:
                 try:
                     proc = subprocess.Popen(
                         ["aplay", "-q", wav_path],
+                        stdin=subprocess.DEVNULL,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                     )

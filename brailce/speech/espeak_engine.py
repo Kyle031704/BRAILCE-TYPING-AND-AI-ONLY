@@ -206,6 +206,7 @@ class EspeakEngine(SpeechEngine):
             try:
                 result = subprocess.run(
                     [bin_path, "--version"],
+                    stdin=subprocess.DEVNULL,
                     capture_output=True,
                     text=True,
                     timeout=5,
@@ -218,6 +219,7 @@ class EspeakEngine(SpeechEngine):
         try:
             result = subprocess.run(
                 ["espeak-ng", "--version"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -227,6 +229,7 @@ class EspeakEngine(SpeechEngine):
             try:
                 result = subprocess.run(
                     ["espeak", "--version"],
+                    stdin=subprocess.DEVNULL,
                     capture_output=True,
                     text=True,
                     timeout=5,
@@ -326,6 +329,7 @@ class EspeakEngine(SpeechEngine):
                 ]
                 espeak_proc = subprocess.run(
                     cmd,
+                    stdin=subprocess.DEVNULL,
                     capture_output=True,
                     timeout=25,
                 )

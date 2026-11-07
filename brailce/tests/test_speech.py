@@ -155,3 +155,37 @@ class TestEspeakEngine:
         assert engine._queue.empty()
         assert not engine._running
         assert engine._worker is None
+
+
+def test_piper_slice_carrier_audio_preserves_short_words() -> None:
+    """Verify that slice_carrier_audio cuts safely inside the colon pause before target word."""
+    from brailce.speech.piper_engine import slice_carrier_audio
+    import math
+
+    sr = 22050
+    # 1. Lead-in silence (20ms)
+    s1 = [0] * int(sr * 0.02)
+    # 2. "Please say:" speech (450ms, loud speech energy)
+    s2 = [int(12000 * math.sin(2 * math.pi * 300 * (t / sr))) for t in range(int(sr * 0.45))]
+    # 3. Colon pause (70ms, lower energy valley)
+    s3 = [int(300 * math.sin(2 * math.pi * 100 * (t / sr))) for t in range(int(sr * 0.07))]
+    # 4. Target word "is" (lax vowel ~100ms, sibilant ~150ms)
+    vowel = [int(2500 * math.sin(2 * math.pi * 200 * (t / sr))) for t in range(int(sr * 0.10))]
+    sibilant = [int(6000 * math.sin(2 * math.pi * 4000 * (t / sr))) for t in range(int(sr * 0.15))]
+    # 5. Trailing silence (100ms)
+    s5 = [0] * int(sr * 0.10)
+
+    samples = s1 + s2 + s3 + vowel + sibilant + s5
+    sliced = slice_carrier_audio(samples, sr=sr)
+
+    # Word starts after s1 + s2 + s3
+    word_start = len(s1) + len(s2) + len(s3)
+    cut_idx = len(samples) - len(sliced)
+
+    # The cut must occur inside the colon pause BEFORE word_start
+    assert cut_idx <= word_start, f"Cut point {cut_idx} must not cut into the word at {word_start}"
+    # The cut must occur AFTER 'Please say:' main speech
+    please_say_end = len(s1) + int(len(s2) * 0.85)
+    assert cut_idx >= please_say_end, f"Cut point {cut_idx} must remove 'Please say:' which ended near {please_say_end}"
+    # All of the vowel and sibilant must be retained
+    assert len(sliced) >= len(vowel) + len(sibilant)

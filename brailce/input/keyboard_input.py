@@ -148,86 +148,98 @@ class KeyboardInputDevice(InputDevice):
                 tty.setcbreak(sys.stdin.fileno())
                 try:
                     while self._running:
-                        r, _, _ = select.select([sys.stdin], [], [], 0.2)
-                        if r:
-                            ch = sys.stdin.read(1)
-                            if ch:
-                                self._process_char(ch)
+                        try:
+                            r, _, _ = select.select([sys.stdin], [], [], 0.2)
+                            if r:
+                                ch = sys.stdin.read(1)
+                                if ch:
+                                    self._process_char(ch)
+                        except Exception as inner_exc:
+                            logger.error("Terminal listener character read error: %s", inner_exc, exc_info=True)
                 finally:
-                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+                    try:
+                        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+                    except Exception:
+                        pass
             except Exception as exc:
-                logger.debug("Terminal listener error: %s", exc)
+                logger.error("Terminal listener initialization/fatal error: %s", exc, exc_info=True)
         else:
             try:
                 import msvcrt, time
                 while self._running:
-                    if msvcrt.kbhit():
-                        ch = msvcrt.getch()
-                        try:
-                            ch_str = ch.decode("utf-8", errors="ignore")
-                            if ch_str:
-                                self._process_char(ch_str)
-                        except Exception:
-                            pass
+                    try:
+                        if msvcrt.kbhit():
+                            ch = msvcrt.getch()
+                            try:
+                                ch_str = ch.decode("utf-8", errors="ignore")
+                                if ch_str:
+                                    self._process_char(ch_str)
+                            except Exception:
+                                pass
+                    except Exception as inner_exc:
+                        logger.error("Windows terminal character error: %s", inner_exc, exc_info=True)
                     time.sleep(0.05)
             except Exception as exc:
                 logger.debug("Windows terminal listener error: %s", exc)
 
     def _process_char(self, ch: str) -> None:
         """Convert a character from terminal input to an InputEvent."""
-        if ch == "\x03":  # Ctrl+C -> clean exit so PuTTY never gets stuck
-            logger.info("Terminal listener: Ctrl+C received, emitting QUIT")
-            self._running = False
-            self._emit_event(control_event(EventType.QUIT, self.SOURCE_NAME))
-            return
-        elif ch == "\x1b":
-            # Check if this is an escape sequence (e.g. F1, F2 in PuTTY)
-            import sys
-            seq = ""
-            if sys.platform != "win32":
-                try:
-                    import select
-                    while select.select([sys.stdin], [], [], 0.03)[0]:
-                        seq += sys.stdin.read(1)
-                except Exception:
-                    pass
-            
-            if seq in ("OP", "[11~", "[[A", "O1;2P"):  # F1 key in PuTTY / xterm -> MODE_PRESSED
-                self._emit_event(control_event(EventType.MODE_PRESSED, self.SOURCE_NAME))
-            elif seq in ("OQ", "[12~", "[[B", "O1;2Q"):  # F2 key in PuTTY -> LANGUAGE_TOGGLE
-                self._emit_event(control_event(EventType.LANGUAGE_TOGGLE, self.SOURCE_NAME))
-            elif seq in ("OR", "[13~", "[[C", "O1;2R"):  # F3 key in PuTTY -> CLEAR_PRESSED
-                self._emit_event(control_event(EventType.CLEAR_PRESSED, self.SOURCE_NAME))
-            elif not seq:  # Pure ESC key
+        try:
+            if ch == "\x03":  # Ctrl+C -> clean exit so PuTTY never gets stuck
+                logger.info("Terminal listener: Ctrl+C received, emitting QUIT")
+                self._running = False
                 self._emit_event(control_event(EventType.QUIT, self.SOURCE_NAME))
-        elif ch in ("\t", "\x09"):  # TAB -> Change Mode (cycles Free Input -> Math -> AI -> Scanner)
-            self._emit_event(control_event(EventType.MODE_PRESSED, self.SOURCE_NAME))
-        elif ch in ("`", "~"):  # Backtick / Tilde -> Toggle Language ([EN] <-> [FIL])
-            self._emit_event(control_event(EventType.LANGUAGE_TOGGLE, self.SOURCE_NAME))
-        elif ch in ("\r", "\n"):  # ENTER / Confirm
-            self._emit_event(control_event(EventType.ENTER_PRESSED, self.SOURCE_NAME))
-        elif ch in ("\x7f", "\x08", "\b"):  # Backspace
-            now = time.time()
-            if now - self._last_space_time < 0.35:
-                self._last_backspace_time = 0.0
-                self._last_space_time = 0.0
-                self._emit_event(control_event(EventType.LANGUAGE_TOGGLE, self.SOURCE_NAME))
                 return
-            self._last_backspace_time = now
-            self._emit_event(control_event(EventType.BACKSPACE_PRESSED, self.SOURCE_NAME))
-        elif ch == " ":  # Space
-            now = time.time()
-            if now - self._last_backspace_time < 0.35:
-                self._last_backspace_time = 0.0
-                self._last_space_time = 0.0
+            elif ch == "\x1b":
+                # Check if this is an escape sequence (e.g. F1, F2 in PuTTY)
+                import sys
+                seq = ""
+                if sys.platform != "win32":
+                    try:
+                        import select
+                        while select.select([sys.stdin], [], [], 0.03)[0]:
+                            seq += sys.stdin.read(1)
+                    except Exception:
+                        pass
+                
+                if seq in ("OP", "[11~", "[[A", "O1;2P"):  # F1 key in PuTTY / xterm -> MODE_PRESSED
+                    self._emit_event(control_event(EventType.MODE_PRESSED, self.SOURCE_NAME))
+                elif seq in ("OQ", "[12~", "[[B", "O1;2Q"):  # F2 key in PuTTY -> LANGUAGE_TOGGLE
+                    self._emit_event(control_event(EventType.LANGUAGE_TOGGLE, self.SOURCE_NAME))
+                elif seq in ("OR", "[13~", "[[C", "O1;2R"):  # F3 key in PuTTY -> CLEAR_PRESSED
+                    self._emit_event(control_event(EventType.CLEAR_PRESSED, self.SOURCE_NAME))
+                elif not seq:  # Pure ESC key
+                    self._emit_event(control_event(EventType.QUIT, self.SOURCE_NAME))
+            elif ch in ("\t", "\x09"):  # TAB -> Change Mode (cycles Free Input -> Math -> AI -> Scanner)
+                self._emit_event(control_event(EventType.MODE_PRESSED, self.SOURCE_NAME))
+            elif ch in ("`", "~"):  # Backtick / Tilde -> Toggle Language ([EN] <-> [FIL])
                 self._emit_event(control_event(EventType.LANGUAGE_TOGGLE, self.SOURCE_NAME))
-                return
-            self._last_space_time = now
-            self._emit_event(control_event(EventType.SPACE_PRESSED, self.SOURCE_NAME))
-        else:
-            upper = ch.upper()
-            if upper in SUPPORTED_CHARACTERS:
-                self._emit_event(character_event(upper, self.SOURCE_NAME))
+            elif ch in ("\r", "\n"):  # ENTER / Confirm
+                self._emit_event(control_event(EventType.ENTER_PRESSED, self.SOURCE_NAME))
+            elif ch in ("\x7f", "\x08", "\b"):  # Backspace
+                now = time.time()
+                if now - self._last_space_time < 0.35:
+                    self._last_backspace_time = 0.0
+                    self._last_space_time = 0.0
+                    self._emit_event(control_event(EventType.LANGUAGE_TOGGLE, self.SOURCE_NAME))
+                    return
+                self._last_backspace_time = now
+                self._emit_event(control_event(EventType.BACKSPACE_PRESSED, self.SOURCE_NAME))
+            elif ch == " ":  # Space
+                now = time.time()
+                if now - self._last_backspace_time < 0.35:
+                    self._last_backspace_time = 0.0
+                    self._last_space_time = 0.0
+                    self._emit_event(control_event(EventType.LANGUAGE_TOGGLE, self.SOURCE_NAME))
+                    return
+                self._last_space_time = now
+                self._emit_event(control_event(EventType.SPACE_PRESSED, self.SOURCE_NAME))
+            else:
+                upper = ch.upper()
+                if upper in SUPPORTED_CHARACTERS:
+                    self._emit_event(character_event(upper, self.SOURCE_NAME))
+        except Exception as exc:
+            logger.error("Error in _process_char for %r: %s", ch, exc, exc_info=True)
 
     # ---- Key Handling ----
 

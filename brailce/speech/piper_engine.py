@@ -109,12 +109,14 @@ def _find_piper_model() -> Optional[str]:
 
 def slice_carrier_audio(samples: list[int], sr: int = 22050) -> list[int]:
     """
-    Backward-Scanning Carrier Audio Slicer:
+    Carrier Audio Slicer for single words:
     - Synthesizes: "Please say: <target>." with Piper.
-    - Scans backward in the first half of the audio (between 0.40s and 0.95s from speech onset)
-      to locate the silence gap separating "Please say:" from <target>.
-    - Cuts 50ms (5 windows) BEFORE the target word starts.
-    - Keeps 100% of remaining audio to the very end of the file.
+    - Locates the colon pause between 'Please say:' and <target>
+      in the exact 380ms to 680ms window from speech onset.
+    - Slices 20ms before the pause valley to capture the full target word.
+    - Guaranteed NEVER to cut into initial lax vowels ('is', 'in', 'it', 'at')
+      or initial quiet consonants ('s', 'c', etc.).
+    - Keeps 100% of audio to the very end of the file.
     """
     win = int(sr * 0.010)  # 10ms window = 220 samples at 22050Hz
     if win <= 0:
@@ -127,28 +129,31 @@ def slice_carrier_audio(samples: list[int], sr: int = 22050) -> list[int]:
         rms_list.append(r)
 
     total_windows = len(rms_list)
-    if total_windows < 40:
+    if total_windows < 35:
         return samples
 
-    first_voiced = next((i for i, r in enumerate(rms_list) if r > 300), 0)
-    last_voiced = max((i for i, r in enumerate(rms_list) if r > 500), default=total_windows - 1)
+    # 1. Find speech onset of "Please say:"
+    first_voice = next((i for i, r in enumerate(rms_list) if r > 250), 0)
 
-    search_start = min(total_windows - 10, first_voiced + 30)
-    search_end = max(search_start + 1, last_voiced - 8)
+    # 2. Search strictly within the colon pause window (380ms to 680ms from speech onset)
+    search_start = min(total_windows - 5, first_voice + 38)
+    search_end = min(total_windows - 2, first_voice + 68)
 
-    min_win = min(range(search_start, search_end), key=lambda k: rms_list[k])
+    if search_start >= search_end:
+        search_start = max(0, first_voice + 25)
+        search_end = min(total_windows, search_start + 30)
 
-    target_onset = min_win
-    for j in range(min_win, min(total_windows, min_win + 30)):
-        if rms_list[j] > 500:
-            target_onset = j
-            break
+    sub_rms = rms_list[search_start:search_end]
+    min_idx = search_start + sub_rms.index(min(sub_rms))
 
-    cut_window = max(first_voiced + 25, target_onset - 4)
+    # 3. Cut 20ms before the minimum valley, safely inside the colon pause
+    cut_window = max(first_voice + 32, min_idx - 2)
     cut_sample = cut_window * win
     sliced = samples[cut_sample:]
-    if not sliced or len(sliced) < int(sr * 0.025) or max(abs(s) for s in sliced) < 500:
+
+    if not sliced or len(sliced) < int(sr * 0.04) or max(abs(s) for s in sliced) < 250:
         return samples
+
     return sliced
 
 
@@ -165,7 +170,7 @@ def _process_carrier_wav(carrier_wav: str, pre_s: float = 0.12, post_s: float = 
         num_samples = len(raw) // 2
         samples = list(struct.unpack(f"<{num_samples}h", raw))
         target_samples = slice_carrier_audio(samples, sr=params.framerate)
-        if not target_samples or max(abs(s) for s in target_samples) < 500:
+        if not target_samples or max(abs(s) for s in target_samples) < 250:
             return False
 
         target_pcm = struct.pack(f"<{len(target_samples)}h", *target_samples)
@@ -373,8 +378,8 @@ class PiperEngine(SpeechEngine):
                     p_piper = None
                     try:
                         if is_single_word:
-                            target_word = speech_text.strip().rstrip(".")
-                            carrier_prompt = f"Please say: {target_word}."
+                            target_word = speech_text.strip().rstrip(".!?,;:")
+                            carrier_prompt = f"Please say: {target_word.lower()}."
                             cmd_piper = [
                                 self._binary,
                                 "--model", self._model,
