@@ -76,6 +76,32 @@ CHARACTER_FILENAME_MAP: Dict[str, str] = {
     "#": "char_hash.wav",
 }
 
+# ---------------------------------------------------------------------------
+# Spoken Word Normalization for SPACE / ENTER
+# ---------------------------------------------------------------------------
+
+def prepare_spoken_word(raw_word: str, lang: str = "en") -> str:
+    """
+    Dedicated function called when Space or Enter is pressed.
+    
+    Ensures:
+    1. Completed words NEVER pass through the single-letter phonetic mapping
+       dictionary or any regex that replaces individual characters inside a word.
+    2. Completed words are normalized using .strip().lower() BEFORE passing
+       to TTS engine so uppercase strings are never read as acronyms.
+    3. Every completed word triggered by SPACE or ENTER (in BOTH English and Filipino modes)
+       MUST be passed as its exact, natural lowercase word (word.strip().lower()).
+       Do NOT alter the spelling of completed words!
+    """
+    if not raw_word:
+        return ""
+
+    clean_word = raw_word.strip().lower().rstrip(".,!?:;")
+    if not clean_word:
+        return ""
+
+    return f"{clean_word}."
+
 
 def is_keystroke_feedback(text: str) -> bool:
     """Check if a string represents an individual keystroke (single letter, digit, operator, symbol)."""
@@ -98,6 +124,16 @@ def is_keystroke_feedback(text: str) -> bool:
 def normalize_for_espeak_character(character: str) -> str:
     """Legacy helper maintained for backward compatibility. Returns clean token."""
     return normalize_for_piper(character, is_character=True)
+
+
+def normalize_word(word: str) -> str:
+    """Normalize a single word for speech: clean lowercase string ending with period."""
+    if not word:
+        return ""
+    clean = word.strip().lower().rstrip(".,!?:;")
+    if not clean:
+        return ""
+    return f"{clean}."
 
 
 def normalize_for_piper(

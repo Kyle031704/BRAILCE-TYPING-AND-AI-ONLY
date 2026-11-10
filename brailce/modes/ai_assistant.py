@@ -30,7 +30,17 @@ FILIPINO_AI_OFFLINE_RESPONSES = {
     "ano ang pangalan mo": "Ako si Brailce, ang iyong matalinong voice assistant para sa Braille.",
     "sino ka": "Ako si Brailce, ang iyong matalinong voice assistant para sa Braille.",
     "magandang umaga": "Magandang umaga sa iyo! Handa ka na bang mag-aral?",
+    "magandang hapon": "Magandang hapon sa iyo!",
+    "magandang gabi": "Magandang gabi sa iyo!",
+    "salamat": "Walang anuman! Masaya akong makatulong sa iyo.",
     "tulong": "Narito ako upang tulungan ka sa pagbasa at pagsulat ng Braille.",
+    "ano ang braille": "Ang Braille ay isang sistema ng pagbasa at pagsulat gamit ang mga nakataas na tuldok para sa mga bulag.",
+    "sino ang gumawa ng braille": "Si Louis Braille ang lumikha ng sistemang Braille noong taong 1824.",
+    "sino nag imbento ng braille": "Si Louis Braille ang nag-imbento ng sistemang Braille noong 1824 sa France.",
+    "sino si louis braille": "Si Louis Braille ay isang Pranses na tagapagturo na lumikha ng sistemang Braille para sa mga bulag.",
+    "kailan naimbento ang braille": "Naimbento ang sistemang Braille noong taong 1824.",
+    "ano ang grade 1 braille": "Ang Grade 1 Braille ay titik-sa-titik na pagsasalin kung saan bawat karakter ay may katumbas na titik nang walang pagpapaikli.",
+    "ilang tuldok mayroon sa isang braille cell": "Mayroong anim na nakataas na tuldok ang isang karaniwang Braille cell sa dalawang hanay.",
 }
 
 

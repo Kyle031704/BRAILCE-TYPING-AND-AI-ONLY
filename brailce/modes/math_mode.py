@@ -208,9 +208,15 @@ class MathMode(BaseMode):
                     if unicodes:
                         self.app.display.show_braille(unicodes, dots, "")
 
-            # Speak the simple explanation and final answer immediately without delay
+            # Speak the explanation and final answer in appropriate language
             if self.app.speech:
-                self.app.speech.speak(solution.explanation)
+                if self.state.language == "fil":
+                    # Spoken in Filipino: e.g. "2 + 3 = 5" -> "dalawa dagdag tatlo ay lima"
+                    from brailce.speech.filipino_engine import normalize_for_sherpa_filipino
+                    fil_text = normalize_for_sherpa_filipino(f"{solution.expression} = {solution.result_str}")
+                    self.app.speech.speak(fil_text)
+                else:
+                    self.app.speech.speak(solution.explanation)
 
             # Clear buffer so student can type the next problem immediately
             self.state.clear_math_buffer()

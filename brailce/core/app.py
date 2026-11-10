@@ -17,6 +17,7 @@ business logic itself, only wiring and lifecycle management.
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import sys
 from typing import Optional
@@ -344,6 +345,8 @@ class BrailceApp:
     def toggle_language(self) -> str:
         """Toggle between English ('en') and Filipino ('fil') globally."""
         new_lang = self.state.toggle_language()
+        if self.speech and hasattr(self.speech, "language"):
+            self.speech.language = new_lang
         from brailce.speech.filipino_engine import get_language_announcement_path
         from brailce.speech.audio_device import AudioDeviceCoordinator
 
@@ -395,16 +398,38 @@ class BrailceApp:
         if self.display:
             self.display.show_mode(new_mode)
 
-        # Announce mode change clearly using the same eSpeak NG voice
+        # Announce mode change clearly
         if self.speech:
-            mode_announcements = {
-                AppMode.FREE_INPUT: "Free Input Mode.",
-                AppMode.MATH: "Math Mode.",
-                AppMode.AI_ASSISTANT: "AI Assistant Mode.",
-                AppMode.SCANNER: "Scanner Mode.",
-            }
-            announcement = mode_announcements.get(new_mode, f"{new_mode.display_name()}.")
-            self.speech.speak_text(announcement, interrupt=False)
+            if self.state.language == "fil":
+                from brailce.speech.filipino_engine import get_filipino_mode_path
+                from brailce.speech.audio_device import AudioDeviceCoordinator
+                mode_wav = get_filipino_mode_path(new_mode)
+                if mode_wav and os.path.isfile(mode_wav):
+                    import threading
+                    threading.Thread(
+                        target=AudioDeviceCoordinator.play_wav_file,
+                        args=(mode_wav, "mode_announce", 5.0),
+                        daemon=True,
+                        name="brailce-mode-announce-fil"
+                    ).start()
+                else:
+                    fil_ann = {
+                        AppMode.FREE_INPUT: "Malayang Pag-type. Mag-type ng mga titik at salita.",
+                        AppMode.MATH: "Modong Matematika. Mag-type ng bilang at operasyon.",
+                        AppMode.AI_ASSISTANT: "Modong A I Assistant. Mag-type ng iyong tanong at pindutin ang Enter.",
+                        AppMode.SCANNER: "Modong Scanner ng Braille. Pindutin ang Enter upang mag-scan.",
+                    }
+                    announcement = fil_ann.get(new_mode, f"{new_mode.display_name()}.")
+                    self.speech.speak_text(announcement, interrupt=False)
+            else:
+                mode_announcements = {
+                    AppMode.FREE_INPUT: "Free Input Mode.",
+                    AppMode.MATH: "Math Mode.",
+                    AppMode.AI_ASSISTANT: "AI Assistant Mode.",
+                    AppMode.SCANNER: "Scanner Mode.",
+                }
+                announcement = mode_announcements.get(new_mode, f"{new_mode.display_name()}.")
+                self.speech.speak_text(announcement, interrupt=False)
 
         logger.info("Mode changed to: %s", new_mode.display_name())
 

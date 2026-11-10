@@ -59,7 +59,8 @@ class ScannerMode(BaseMode):
         self.scanned_text = None
 
         if self.app.speech:
-            self.app.speech.speak_text("Scanning document", interrupt=False)
+            scan_prompt = "Nag-i-scan..." if self.state.language == "fil" else "Scanning document"
+            self.app.speech.speak_text(scan_prompt, interrupt=False)
 
         threading.Thread(target=self._scan_loop, daemon=True).start()
 
@@ -74,9 +75,11 @@ class ScannerMode(BaseMode):
                     # Announce detection state changes vocally
                     if detected != _last_detected_state:
                         if detected is True and self.app.speech:
-                            self.app.speech.speak_text("Braille detected. Press enter to translate.", interrupt=False)
+                            prompt = "Nakitang Braille. Pindutin ang Enter upang isalin." if self.state.language == "fil" else "Braille detected. Press enter to translate."
+                            self.app.speech.speak_text(prompt, interrupt=False)
                         elif detected is False and _last_detected_state is not None and self.app.speech:
-                            self.app.speech.speak_text("No Braille detected. Please adjust the sheet.", interrupt=False)
+                            prompt = "Walang nakitang Braille. Mangyaring ayusin ang papel." if self.state.language == "fil" else "No Braille detected. Please adjust the sheet."
+                            self.app.speech.speak_text(prompt, interrupt=False)
                         _last_detected_state = detected
                 except Exception as exc:
                     logger.debug("Presence detection error: %s", exc)
@@ -141,11 +144,12 @@ class ScannerMode(BaseMode):
         else:
             self._is_scanning = False
             self._braille_detected = False
-            err_msg = "No Braille Detected - Adjust Sheet"
+            err_msg = "Walang nakitang Braille" if self.state.language == "fil" else "No Braille Detected - Adjust Sheet"
             if self.app.display:
                 self.app.display.show_status(f"⚠ {err_msg}")
             if self.app.speech:
-                self.app.speech.speak_text("No Braille detected. Please adjust the sheet.", interrupt=True)
+                prompt = "Walang nakitang Braille." if self.state.language == "fil" else "No Braille detected. Please adjust the sheet."
+                self.app.speech.speak_text(prompt, interrupt=True)
 
     def _speak_result(self) -> None:
         """Speak the text that was scanned upon user confirmation."""

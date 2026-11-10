@@ -118,6 +118,7 @@ class AudioDeviceCoordinator:
                     )
                     cls.register_process(proc, owner)
                     proc.wait(timeout=timeout)
+                    time.sleep(0.12)  # Allow ALSA hardware ring buffer to completely drain to DAC
                     return proc.returncode == 0
                 except subprocess.TimeoutExpired:
                     if proc and proc.poll() is None:

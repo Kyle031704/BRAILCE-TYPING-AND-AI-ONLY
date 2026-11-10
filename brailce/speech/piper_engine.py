@@ -10,8 +10,8 @@ Uses the preferred voice model: en_US-ryan-medium.onnx.
 Unified Audio Pipeline:
 - Direct Piper neural synthesis for all speech: words, sentences, characters, and announcements.
 - Instant pre-cached WAV playback for single character keystroke feedback.
-- Locked VITS parameters: length_scale 1.08, noise_scale 0.5, noise_w 0.6.
-- Pure wave module silence padding (120ms pre, 150ms post).
+- Locked VITS parameters: length_scale 1.05, noise_scale 0.5, noise_w 0.6.
+- Pure wave module silence padding (120ms pre, 180ms post).
 - Played strictly with `aplay -q <tmp_wav_path>`. Never uses `aplay -t raw`.
 """
 
@@ -36,6 +36,7 @@ from brailce.speech.base import SpeechEngine
 from brailce.speech.normalizer import (
     CHARACTER_FILENAME_MAP,
     normalize_for_piper,
+    prepare_spoken_word,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,7 @@ def _find_cache_dir() -> Optional[str]:
     if os.path.isdir(pi_dir):
         return pi_dir
     return None
+
 
 
 def _find_piper_binary() -> Optional[str]:
@@ -107,96 +109,16 @@ def _find_piper_model() -> Optional[str]:
     return None
 
 
-def slice_carrier_audio(samples: list[int], sr: int = 22050) -> list[int]:
-    """
-    Carrier Audio Slicer for single words:
-    - Synthesizes: "Please say: <target>." with Piper.
-    - Locates the colon pause between 'Please say:' and <target>
-      in the exact 380ms to 680ms window from speech onset.
-    - Slices 20ms before the pause valley to capture the full target word.
-    - Guaranteed NEVER to cut into initial lax vowels ('is', 'in', 'it', 'at')
-      or initial quiet consonants ('s', 'c', etc.).
-    - Keeps 100% of audio to the very end of the file.
-    """
-    win = int(sr * 0.010)  # 10ms window = 220 samples at 22050Hz
-    if win <= 0:
-        win = 220
-
-    rms_list = []
-    for i in range(0, len(samples) - win, win):
-        chunk = samples[i : i + win]
-        r = math.sqrt(sum(s * s for s in chunk) / win)
-        rms_list.append(r)
-
-    total_windows = len(rms_list)
-    if total_windows < 35:
-        return samples
-
-    # 1. Find speech onset of "Please say:"
-    first_voice = next((i for i, r in enumerate(rms_list) if r > 250), 0)
-
-    # 2. Search strictly within the colon pause window (380ms to 680ms from speech onset)
-    search_start = min(total_windows - 5, first_voice + 38)
-    search_end = min(total_windows - 2, first_voice + 68)
-
-    if search_start >= search_end:
-        search_start = max(0, first_voice + 25)
-        search_end = min(total_windows, search_start + 30)
-
-    sub_rms = rms_list[search_start:search_end]
-    min_idx = search_start + sub_rms.index(min(sub_rms))
-
-    # 3. Cut 20ms before the minimum valley, safely inside the colon pause
-    cut_window = max(first_voice + 32, min_idx - 2)
-    cut_sample = cut_window * win
-    sliced = samples[cut_sample:]
-
-    if not sliced or len(sliced) < int(sr * 0.04) or max(abs(s) for s in sliced) < 250:
-        return samples
-
-    return sliced
-
-
-def _process_carrier_wav(carrier_wav: str, pre_s: float = 0.12, post_s: float = 0.15) -> bool:
-    try:
-        with wave.open(carrier_wav, "rb") as wf:
-            params = wf.getparams()
-            nframes = wf.getnframes()
-            raw = wf.readframes(nframes)
-
-        if params.nchannels != 1 or params.sampwidth != 2 or nframes == 0:
-            return False
-
-        num_samples = len(raw) // 2
-        samples = list(struct.unpack(f"<{num_samples}h", raw))
-        target_samples = slice_carrier_audio(samples, sr=params.framerate)
-        if not target_samples or max(abs(s) for s in target_samples) < 250:
-            return False
-
-        target_pcm = struct.pack(f"<{len(target_samples)}h", *target_samples)
-        pre_silence = b"\x00\x00" * int(params.framerate * pre_s)
-        post_silence = b"\x00\x00" * int(params.framerate * post_s)
-        padded = pre_silence + target_pcm + post_silence
-
-        with wave.open(carrier_wav, "wb") as wf_out:
-            wf_out.setparams(params)
-            wf_out.writeframes(padded)
-
-        return True
-    except Exception as exc:
-        logger.debug("Carrier slicing error: %s", exc)
-        return False
-
-
-def _pad_wav_with_silence(wav_path: str, pre_ms: int = 100, post_ms: int = 150) -> None:
-    """Pad WAV file with silence using Python's wave module."""
+def _pad_wav_with_silence(wav_path: str, pre_ms: int = 250, post_ms: int = 350) -> None:
+    """Prepend 250ms pure digital zero PCM silence and append 350ms post-silence to WAV file."""
     try:
         with wave.open(wav_path, "rb") as wf:
             params = wf.getparams()
             frames = wf.readframes(wf.getnframes())
 
-        pre_silence = b"\x00\x00" * int(params.framerate * (pre_ms / 1000.0))
-        post_silence = b"\x00\x00" * int(params.framerate * (post_ms / 1000.0))
+        bytes_per_sample = params.sampwidth * params.nchannels
+        pre_silence = b"\x00" * bytes_per_sample * int(params.framerate * (pre_ms / 1000.0))
+        post_silence = b"\x00" * bytes_per_sample * int(params.framerate * (post_ms / 1000.0))
 
         with wave.open(wav_path, "wb") as wf:
             wf.setparams(params)
@@ -349,10 +271,10 @@ class PiperEngine(SpeechEngine):
     def _speak_sync(self, text: str) -> None:
         """
         Synthesize speech:
-          - Single words on SPACE: synthesized via Carrier-Sentence ("Please say. <target>.")
-            and sliced at the longest 550ms silence gap, with automatic direct fallback.
-          - Multi-word sentences, AI responses, mode intros: synthesized directly.
-          - Play strictly via aplay -q <tmp_wav_path>.
+          - If single character: play clean cached char_*.wav directly (zero latency).
+          - Words on SPACE or sentences on ENTER: synthesize directly with Piper
+            using the exact same direct pipeline and parameters, padded with silence,
+            played strictly via `aplay -q <tmp_wav_path>`.
         """
         if not self.is_available():
             logger.warning("Piper not available, unable to speak: %s", text)
@@ -362,8 +284,26 @@ class PiperEngine(SpeechEngine):
         if not speech_text:
             return
 
+        trimmed = speech_text.strip()
+
+        # Single character → cached char_*.wav
+        if len(trimmed) == 1:
+            if self.play_cached_character(trimmed):
+                return
+
         words = speech_text.split()
         is_single_word = len(words) == 1
+
+        if is_single_word:
+            target_word = speech_text.strip().rstrip(".!?,;:")
+            # Capitalize single word for proper sentence-initial prosody in neural model
+            synth_text = f"{target_word.capitalize()}."
+            length_scale = "1.12"
+            sentence_silence = "0.35"
+        else:
+            synth_text = speech_text
+            length_scale = "1.05"
+            sentence_silence = "0.35"
 
         tmp_fd = None
         tmp_path = None
@@ -377,71 +317,29 @@ class PiperEngine(SpeechEngine):
                 for attempt in range(3):
                     p_piper = None
                     try:
-                        if is_single_word:
-                            target_word = speech_text.strip().rstrip(".!?,;:")
-                            carrier_prompt = f"Please say: {target_word.lower()}."
-                            cmd_piper = [
-                                self._binary,
-                                "--model", self._model,
-                                "--output_file", tmp_path,
-                                "--length_scale", PIPER_LENGTH_SCALE,
-                                "--noise_scale", PIPER_NOISE_SCALE,
-                                "--noise_w", PIPER_NOISE_W,
-                            ]
-                            p_piper = subprocess.Popen(
-                                cmd_piper,
-                                stdin=subprocess.PIPE,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                            )
-                            p_piper.communicate(carrier_prompt.encode("utf-8") + b"\n", timeout=15)
+                        cmd_piper = [
+                            self._binary,
+                            "--model", self._model,
+                            "--output_file", tmp_path,
+                            "--length_scale", length_scale,
+                            "--noise_scale", PIPER_NOISE_SCALE,
+                            "--noise_w", PIPER_NOISE_W,
+                            "--sentence_silence", sentence_silence,
+                        ]
+                        p_piper = subprocess.Popen(
+                            cmd_piper,
+                            stdin=subprocess.PIPE,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        p_piper.communicate(synth_text.encode("utf-8") + b"\n", timeout=15)
 
-                            if not os.path.isfile(tmp_path) or os.path.getsize(tmp_path) == 0:
-                                time.sleep(0.08)
-                                continue
+                        if not os.path.isfile(tmp_path) or os.path.getsize(tmp_path) == 0:
+                            time.sleep(0.08)
+                            continue
 
-                            sliced = _process_carrier_wav(tmp_path, pre_s=0.12, post_s=0.15)
-                            if not sliced:
-                                # Safety fallback: direct synthesis without carrier
-                                cmd_direct = [
-                                    self._binary,
-                                    "--model", self._model,
-                                    "--output_file", tmp_path,
-                                    "--length_scale", PIPER_LENGTH_SCALE,
-                                    "--noise_scale", PIPER_NOISE_SCALE,
-                                    "--noise_w", PIPER_NOISE_W,
-                                ]
-                                p_dir = subprocess.Popen(
-                                    cmd_direct,
-                                    stdin=subprocess.PIPE,
-                                    stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL,
-                                )
-                                p_dir.communicate(speech_text.encode("utf-8") + b"\n", timeout=15)
-                                _pad_wav_with_silence(tmp_path, pre_ms=120, post_ms=150)
-                        else:
-                            # Multi-word sentence / utterance
-                            cmd_piper = [
-                                self._binary,
-                                "--model", self._model,
-                                "--output_file", tmp_path,
-                                "--length_scale", PIPER_LENGTH_SCALE,
-                                "--noise_scale", PIPER_NOISE_SCALE,
-                                "--noise_w", PIPER_NOISE_W,
-                            ]
-                            p_piper = subprocess.Popen(
-                                cmd_piper,
-                                stdin=subprocess.PIPE,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                            )
-                            p_piper.communicate(speech_text.encode("utf-8") + b"\n", timeout=15)
-
-                            if not os.path.isfile(tmp_path) or os.path.getsize(tmp_path) == 0:
-                                time.sleep(0.08)
-                                continue
-
-                            _pad_wav_with_silence(tmp_path, pre_ms=100, post_ms=150)
+                        # Prepend 250ms pure digital zero PCM silence and append 350ms post-silence
+                        _pad_wav_with_silence(tmp_path, pre_ms=250, post_ms=350)
 
                         # Play strictly with `aplay -q <tmp_path>`
                         success = AudioDeviceCoordinator.play_wav_file(tmp_path, owner="piper", timeout=30.0)

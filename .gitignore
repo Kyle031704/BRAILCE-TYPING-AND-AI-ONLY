@@ -49,6 +49,8 @@ yt_info_extracted.txt
 *.tflite
 *.weights
 brailce/vision/yolov8_braille.pt
+models/
+brailce/models/
 
 # 6. Python Bytecode, Caches & Testing Artifacts
 __pycache__/

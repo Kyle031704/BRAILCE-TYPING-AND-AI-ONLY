@@ -101,3 +101,32 @@ def test_ai_assistant_filipino_offline_response():
     mode._finish_processing.assert_called_once()
     called_response = mode._finish_processing.call_args[0][0]
     assert "Mabuti naman ako" in called_response
+
+
+def test_tagalog_number_conversion():
+    from brailce.speech.filipino_engine import tagalog_number
+
+    assert tagalog_number(0) == "sero"
+    assert tagalog_number(7) == "pito"
+    assert tagalog_number(10) == "sampu"
+    assert tagalog_number(11) == "labing-isa"
+    assert tagalog_number(14) == "labing-apat"
+    assert tagalog_number(20) == "dalawampu"
+    assert tagalog_number(21) == "dalawampu't isa"
+    assert tagalog_number(100) == "isang daan"
+    assert tagalog_number(114) == "isang daan at labing-apat"
+    assert tagalog_number(999) == "siyam na daan at siyamnapu't siyam"
+
+
+def test_normalize_for_sherpa_filipino():
+    from brailce.speech.filipino_engine import normalize_for_sherpa_filipino
+
+    res = normalize_for_sherpa_filipino("7 + 14 = 21")
+    assert res == "pito dagdag labing-apat ay dalawampu't isa"
+
+    res_math = normalize_for_sherpa_filipino("5 - 2 = 3.")
+    assert res_math == "lima bawas dalawa ay tatlo"
+
+    # Uppercase and punctuation stripping
+    res_punct = normalize_for_sherpa_filipino("MAGANDANG UMAGA!")
+    assert res_punct == "magandang umaga"
