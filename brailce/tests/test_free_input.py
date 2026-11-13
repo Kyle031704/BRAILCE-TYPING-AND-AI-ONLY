@@ -12,6 +12,7 @@ from brailce.core.app import BrailceApp
 from brailce.core.events import EventType, InputEvent
 from brailce.modes.free_input import FreeInputMode
 from brailce.braille.models import BrailleMapping
+from brailce.speech.service import SpeechService
 
 
 @pytest.fixture
@@ -21,14 +22,15 @@ def mock_app() -> BrailceApp:
     app.state = MagicMock()
     app.state.ai_processing = False
     app.state.number_mode = False
+    app.state.language = "en"
     app.display = MagicMock()
-    app.speech = MagicMock()
+    app.speech = MagicMock(spec=SpeechService)
     app.encoder = MagicMock()
-    
+
     # Setup config dict-like mock
     app.config = MagicMock()
     app.config.get.return_value = True
-    
+
     return app
 
 
@@ -67,8 +69,8 @@ class TestFreeInputMode:
         mock_app.display.show_braille.assert_called_once()
         mock_app.display.show_text_buffer.assert_called_once_with("A")
         
-        # 4. Check speech
-        mock_app.speech.speak.assert_called_once_with("A")
+        # 4. Check speech via facade
+        mock_app.speech.speak_character.assert_called_once_with("A")
 
     def test_handle_unsupported_character(self, free_input_mode: FreeInputMode, mock_app: BrailceApp) -> None:
         """Test pipeline when an unsupported character is pressed."""
@@ -78,7 +80,7 @@ class TestFreeInputMode:
         free_input_mode.handle_event(event)
 
         mock_app.state.append_character.assert_not_called()
-        mock_app.speech.speak.assert_called_once_with("Unsupported")
+        mock_app.speech.speak_text.assert_called_once_with("Unsupported")
 
     def test_handle_space(self, free_input_mode: FreeInputMode, mock_app: BrailceApp) -> None:
         """Test space button logic."""
@@ -89,7 +91,7 @@ class TestFreeInputMode:
 
         mock_app.state.append_character.assert_called_once_with(" ")
         mock_app.display.show_character.assert_called_once_with("Space")
-        mock_app.speech.speak.assert_called_once_with("A")
+        mock_app.speech.speak_word_clean.assert_called_once_with("A")
 
     def test_handle_backspace_with_content(self, free_input_mode: FreeInputMode, mock_app: BrailceApp) -> None:
         """Test backspace button logic when buffer has text."""
@@ -138,7 +140,7 @@ class TestFreeInputMode:
         free_input_mode.handle_event(event)
 
         mock_app.state.append_character.assert_called_once_with("1")
-        mock_app.speech.speak.assert_called_once_with("one")
+        mock_app.speech.speak_character.assert_called_once_with("1")
         mock_app.display.show_character.assert_called_once_with("1 (from A)")
 
     def test_space_terminates_number_mode(self, free_input_mode: FreeInputMode, mock_app: BrailceApp) -> None:
@@ -150,11 +152,11 @@ class TestFreeInputMode:
         assert mock_app.state.number_mode is False
 
     def test_handle_enter(self, free_input_mode: FreeInputMode, mock_app: BrailceApp) -> None:
-        """Test enter speaks the sentence and refreshes the buffer."""
+        """Test enter speaks single word cleanly via speak_word_clean and refreshes the buffer."""
         mock_app.state.text_buffer = "cat"
         event = InputEvent(EventType.ENTER_PRESSED)
         free_input_mode.handle_event(event)
 
-        mock_app.speech.speak.assert_called_once_with("cat", interrupt=False)
+        mock_app.speech.speak_word_clean.assert_called_once_with("cat")
         mock_app.state.clear_buffer.assert_called_once()
         mock_app.display.show_text_buffer.assert_called_once_with("")

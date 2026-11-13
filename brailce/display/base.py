@@ -84,12 +84,17 @@ class DisplayDevice(abc.ABC):
         """Close or clear the camera viewfinder/preview window."""
         pass
 
+    def set_language(self, language: str) -> None:
+        """Set display language ('en' or 'fil'). Default no-op."""
+        pass
+
     def show_math_result(
         self,
         equation: str,
         result: str,
         explanation: str,
         short_step: Optional[str] = None,
+        language: str = "en",
     ) -> None:
         """
         Display the math equation, answer, and pedagogical step explanation.

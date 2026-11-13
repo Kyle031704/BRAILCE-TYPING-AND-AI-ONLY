@@ -23,26 +23,31 @@ try:
 except ImportError:
     paramiko = None
 
-import socket
+def _load_dotenv() -> None:
+    env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
+    if not os.path.isfile(env_path):
+        return
+    try:
+        with open(env_path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+    except Exception:
+        pass
 
-def get_pi_host():
-    if os.getenv("PI_IP"):
-        return os.getenv("PI_IP")
-    for ip in ["192.168.137.156", "192.168.0.107", "10.161.29.70"]:
-        try:
-            s = socket.socket()
-            s.settimeout(0.4)
-            if s.connect_ex((ip, 22)) == 0:
-                s.close()
-                return ip
-            s.close()
-        except Exception:
-            pass
-    return "192.168.137.156"
 
-PI_HOST = get_pi_host()
-PI_USER = os.getenv("PI_USER", "raspberrypi5")
-PI_PASS = os.getenv("PI_PASS", "raspberrypi5")
+_load_dotenv()
+
+PI_HOST = os.getenv("PI_IP", "").strip()
+PI_USER = os.getenv("PI_USER", "").strip()
+PI_PASS = os.getenv("PI_PASS", "").strip()
+PI_REMOTE_DIR = os.getenv("PI_REMOTE_DIR", "/home/pi/brailce").strip()
 
 PIPER_LENGTH_SCALE = "1.08"
 PIPER_NOISE_SCALE = "0.5"
@@ -88,6 +93,9 @@ def generate_on_remote_pi() -> None:
     if paramiko is None:
         print("Paramiko required.")
         sys.exit(1)
+    if not PI_HOST or not PI_USER or not PI_PASS:
+        print("PI_IP, PI_USER, and PI_PASS must be set in environment or `.env` (see `.env.example`).")
+        sys.exit(1)
 
     print(f"Connecting to Raspberry Pi 5 at {PI_HOST}...")
     ssh = paramiko.SSHClient()
@@ -95,9 +103,10 @@ def generate_on_remote_pi() -> None:
     ssh.connect(PI_HOST, username=PI_USER, password=PI_PASS, timeout=10)
     print("Connected!")
 
-    remote_cache_dir = "/home/raspberrypi5/brailce/brailce/audio/characters"
+    remote_cache_dir = f"{PI_REMOTE_DIR}/brailce/audio/characters"
     local_cache_dir = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "brailce", "audio", "characters")
+    )
     )
     os.makedirs(local_cache_dir, exist_ok=True)
 
@@ -111,8 +120,8 @@ import struct
 import wave
 import subprocess
 
-PIPER_BIN = "/home/raspberrypi5/piper/piper/piper"
-PIPER_MODEL = "/home/raspberrypi5/piper/en_US-ryan-medium.onnx"
+PIPER_BIN = os.environ.get("PIPER_BIN", os.path.expanduser("~/piper/piper/piper"))
+PIPER_MODEL = os.environ.get("PIPER_MODEL", os.path.expanduser("~/piper/en_US-ryan-medium.onnx"))
 OUT_DIR = "{remote_cache_dir}"
 
 LENGTH_SCALE = "{PIPER_LENGTH_SCALE}"
@@ -221,12 +230,13 @@ for fname, text in CHARACTER_MAP.items():
 '''
 
     sftp = ssh.open_sftp()
-    with sftp.file("/home/raspberrypi5/gen_cache.py", "w") as f:
+    remote_tmp = "/tmp/gen_cache.py"
+    with sftp.file(remote_tmp, "w") as f:
         f.write(remote_script)
         f.flush()
 
     print("--- Generating Character Audio Files on Pi via Digital-Zero Slicer ---")
-    stdin, stdout, stderr = ssh.exec_command("python3 /home/raspberrypi5/gen_cache.py", timeout=300)
+    stdin, stdout, stderr = ssh.exec_command(f"python3 {remote_tmp}", timeout=300)
     out = stdout.read().decode("utf-8", errors="replace")
     err = stderr.read().decode("utf-8", errors="replace")
     print(out)
@@ -244,7 +254,7 @@ for fname, text in CHARACTER_MAP.items():
             pass
 
     sftp.close()
-    ssh.exec_command("rm -f /home/raspberrypi5/gen_cache.py")
+    ssh.exec_command(f"rm -f {remote_tmp}")
     ssh.close()
     print("Character audio generation complete!")
 

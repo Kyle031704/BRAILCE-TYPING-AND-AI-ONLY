@@ -56,6 +56,13 @@ class MathMode(BaseMode):
     """
 
     @property
+    def filipino_engine(self):
+        if not hasattr(self, "_filipino_engine") or self._filipino_engine is None:
+            from brailce.speech.filipino_engine import FilipinoEngine
+            self._filipino_engine = FilipinoEngine(fallback_speech=self.app.speech)
+        return self._filipino_engine
+
+    @property
     def mode_type(self) -> AppMode:
         return AppMode.MATH
 
@@ -131,13 +138,9 @@ class MathMode(BaseMode):
                 )
             self.app.display.show_text_buffer(self.state.math_buffer)
 
-        # 4. Spoken audio feedback via unified speech engine
+        # 4. Spoken audio feedback via unified speech facade
         if self.app.speech:
-            if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                self.app.speech.speak_character(character)
-            else:
-                speech_val = mapping.speech if mapping and mapping.speech else character
-                self.app.speech.speak(speech_val)
+            self.app.speech.speak_character(character)
 
         logger.info("MathMode: CHAR=%s, BUFFER=%s", character, self.state.math_buffer)
 
@@ -178,28 +181,33 @@ class MathMode(BaseMode):
 
     def _handle_enter(self) -> None:
         """Calculate math problem and provide simple step-by-step counting explanation."""
+        from brailce.i18n.strings import get_string
+
+        lang = self.state.language
         expr = self.state.get_math_query()
         if not expr:
+            empty_msg = "Walang laman ang math buffer." if lang == "fil" else "Math buffer is empty"
             if self.app.display:
-                self.app.display.show_status("Math buffer is empty")
+                self.app.display.show_status(empty_msg)
             if self.app.speech:
-                self.app.speech.speak("Math buffer is empty")
+                self.app.speech.speak(empty_msg)
             return
 
-        # Solve deterministically using SafeArithmetic
-        solution = SafeArithmetic.solve(expr)
+        # Solve deterministically using SafeArithmetic with language context
+        solution = SafeArithmetic.solve(expr, language=lang)
 
         if solution.is_valid:
             self.state.math_last_result = solution.result_str
             self.state.math_last_explanation = solution.explanation
 
-            # Display solution card
+            # Display solution card in appropriate language
             if self.app.display:
                 self.app.display.show_math_result(
                     equation=solution.expression,
                     result=solution.result_str,
                     explanation=solution.explanation,
                     short_step=solution.short_step,
+                    language=lang,
                 )
                 if self.app.encoder and solution.result_str:
                     mappings = self.app.encoder.encode_text(solution.result_str)
@@ -208,23 +216,18 @@ class MathMode(BaseMode):
                     if unicodes:
                         self.app.display.show_braille(unicodes, dots, "")
 
-            # Speak the explanation and final answer in appropriate language
+            # Speak the full explanation through the unified SpeechService (same text as LCD)
             if self.app.speech:
-                if self.state.language == "fil":
-                    # Spoken in Filipino: e.g. "2 + 3 = 5" -> "dalawa dagdag tatlo ay lima"
-                    from brailce.speech.filipino_engine import normalize_for_sherpa_filipino
-                    fil_text = normalize_for_sherpa_filipino(f"{solution.expression} = {solution.result_str}")
-                    self.app.speech.speak(fil_text)
-                else:
-                    self.app.speech.speak(solution.explanation)
+                self.app.speech.speak(solution.explanation)
 
             # Clear buffer so student can type the next problem immediately
             self.state.clear_math_buffer()
-            logger.info("MathMode: SOLVED '%s' -> %s", solution.expression, solution.result_str)
+            logger.info("MathMode: SOLVED '%s' (%s) -> %s", solution.expression, lang, solution.result_str)
 
         else:
+            err_msg = solution.error_message or (get_string("MATH_ERR_MALFORMED", lang) if lang == "fil" else "Could not solve")
             if self.app.display:
-                self.app.display.show_error(solution.error_message or "Could not solve")
+                self.app.display.show_error(err_msg)
             if self.app.speech:
                 self.app.speech.speak(solution.explanation)
             logger.warning("MathMode: SOLVE FAILED for '%s': %s", expr, solution.error_message)

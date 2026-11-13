@@ -80,6 +80,8 @@ logs/
 *.tmp
 scratch/
 scratch_*.py
+.env
+.env.local
 
 # 9. IDEs, Editors & OS System Files
 .vscode/

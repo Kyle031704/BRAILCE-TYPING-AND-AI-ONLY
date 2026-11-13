@@ -72,6 +72,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "speak_each_character": True,
         "speak_words": True,
         "speak_control_events": False,
+        # Voice for single letters in Filipino mode: "filipino" (default) or "english"
+        "filipino_letter_voice": "filipino",
         # Maximum speech queue size before dropping events
         "max_queue_size": 50,
     },
@@ -135,6 +137,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "model_path": "brailce/vision/yolov8_braille.pt",
         "confidence_threshold": 0.22,
         "iou_threshold": 0.45,
+        "use_yolo_secondary": False,
+        "announce_capital_sign": False,
         "test_image_path": "",
     },
 }

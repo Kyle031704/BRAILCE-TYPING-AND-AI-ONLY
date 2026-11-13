@@ -23,9 +23,15 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 FILIPINO_SYSTEM_PROMPT = (
-    "Sagutin nang direkta, tama, at totoo ang tanong sa wikang Filipino sa loob ng 1 hanggang 2 maiikling pangungusap. "
-    "Panatilihin ang salitang 'Braille' bilang 'Braille' dahil walang direktang salin ito sa Filipino. "
-    "Huwag magpakilala, huwag gumamit ng mga pampuno o paunang bati, at tumutok lamang sa tumpak na sagot sa tanong."
+    "Sagutin nang direkta, tama, at totoo ang tanong sa purong wikang Filipino (Tagalog) sa loob ng 1 hanggang 2 maiikling pangungusap. "
+    "Huwag gumamit ng mga salitang Ingles maliban sa 'Braille'. Huwag magpakilala, at huwag gumamit ng markdown o emoji.\n"
+    "Mga Halimbawa:\n"
+    "Tanong: Ano ang araw?\n"
+    "Sagot: Ang Araw ay ang pinakamalapit na bituin sa Daigdig na nagbibigay ng init at liwanag.\n"
+    "Tanong: Bakit kulay asul ang langit?\n"
+    "Sagot: Kulay asul ang langit dahil ikinakalat ng himpapawid ang asul na liwanag mula sa Araw.\n"
+    "Tanong: Ano ang Braille?\n"
+    "Sagot: Ang Braille ay sistema ng pagbasa at pagsulat gamit ang mga nakataas na tuldok para sa mga bulag."
 )
 
 FACTUAL_QA_RESPONSES = {
@@ -71,13 +77,13 @@ FACTUAL_QA_RESPONSES = {
     # Filipino Factual Braille Q&A
     "ano ang braille": "Ang Braille ay isang sistema ng pagbasa at pagsulat gamit ang mga nakataas na tuldok para sa mga bulag.",
     "sino ang gumawa ng braille": "Si Louis Braille ang lumikha ng sistemang Braille noong taong 1824.",
-    "sino nag imbento ng braille": "Si Louis Braille ang nag-imbento ng sistemang Braille noong 1824 sa France.",
+    "sino nag imbento ng braille": "Si Louis Braille ang nag-imbento ng sistemang Braille noong 1824 sa Pransya.",
     "sino si louis braille": "Si Louis Braille ay isang Pranses na tagapagturo na lumikha ng sistemang Braille para sa mga bulag.",
     "kailan naimbento ang braille": "Naimbento ang sistemang Braille noong taong 1824.",
     "ano ang grade 1 braille": "Ang Grade 1 Braille ay titik-sa-titik na pagsasalin kung saan bawat karakter ay may katumbas na titik nang walang pagpapaikli.",
     "ilang tuldok mayroon sa isang braille cell": "Mayroong anim na nakataas na tuldok ang isang karaniwang Braille cell sa dalawang hanay.",
-    "ano ang pangalan mo": "Ako si Brailce, ang iyong matalinong voice assistant para sa Braille.",
-    "sino ka": "Ako si Brailce, ang iyong matalinong voice assistant para sa Braille.",
+    "ano ang pangalan mo": "Ako si Brailce, ang iyong matalinong katulong sa pag-aaral ng Braille.",
+    "sino ka": "Ako si Brailce, ang iyong matalinong katulong sa pag-aaral ng Braille.",
     "kumusta": "Mabuti naman! Masaya akong makasama ka sa pag-aaral ng Braille.",
     "kumusta ka": "Mabuti naman! Masaya akong makasama ka sa pag-aaral ng Braille.",
     "magandang umaga": "Magandang umaga sa iyo! Handa ka na bang mag-aral?",
@@ -85,27 +91,124 @@ FACTUAL_QA_RESPONSES = {
     "magandang gabi": "Magandang gabi sa iyo!",
     "salamat": "Walang anuman! Masaya akong makatulong sa iyo.",
     "ano ang kabisera ng pilipinas": "Ang Maynila ang kabisera ng Pilipinas.",
-    "ano ang pinakamalaking planeta": "Ang Jupiter ang pinakamalaking planeta sa Solar System.",
-    "ano ang pinakamalapit na bituin sa mundo": "Ang Araw ang pinakamalapit na bituin sa ating Mundo.",
-    "saang planeta tayo nakatira": "Tayo ay nakatira sa planetang Daigdig o Earth.",
+    "ano ang pinakamalaking planeta": "Ang Hupiter ang pinakamalaking planeta sa sistemang solar.",
+    "ano ang pinakamalapit na bituin sa mundo": "Ang Araw ang pinakamalapit na bituin sa ating Daigdig.",
+    "saang planeta tayo nakatira": "Tayo ay nakatira sa planetang Daigdig.",
     "ilang araw mayroon sa isang taon": "Mayroong 365 na araw sa isang karaniwang taon.",
     "ilang oras mayroon sa isang araw": "Mayroong 24 na oras sa loob ng isang araw.",
-    "ano ang pambansang ibon ng pilipinas": "Ang Philippine Eagle o Agila ng Pilipinas ang ating pambansang ibon.",
+    "ano ang pambansang ibon ng pilipinas": "Ang Agila ng Pilipinas ang ating pambansang ibon.",
     "ano ang pambansang bulaklak ng pilipinas": "Ang Sampaguita ang pambansang bulaklak ng Pilipinas.",
-    "ano ang pambansang bayani ng pilipinas": "Si Dr. Jose Rizal ang ating pambansang bayani.",
+    "ano ang pambansang bayani ng pilipinas": "Si Doktor Jose Rizal ang ating pambansang bayani.",
     "ano ang buwan": "Ang Buwan ay ang likas na satelayt na umiikot sa planetang Daigdig.",
-    "ano ang araw": "Ang Araw ay ang bituin sa gitna ng ating Solar System na nagbibigay ng liwanag at init.",
-    "ano ang tubig": "Ang tubig ay likidong mahalaga sa buhay na binubuo ng hydrogen at oxygen.",
-    "ano ang brailce": "Ang Brailce ay isang voice assistant at learning device para sa pag-aaral ng Braille.",
+    "ano ang araw": "Ang Araw ay ang bituin sa gitna ng ating sistemang solar na nagbibigay ng liwanag at init.",
+    "ano ang tubig": "Ang tubig ay likidong mahalaga sa buhay na binubuo ng hidroheno at oksiheno.",
+    "ano ang brailce": "Ang Brailce ay isang kagamitan at katulong sa pag-aaral ng Braille.",
     "paano magbasa ng braille": "Binabasa ang Braille gamit ang mga dulo ng daliri sa pamamagitan ng pagdama sa mga nakataas na tuldok.",
     "ilan ang titik sa alpabetong filipino": "Mayroong 28 titik sa modernong alpabetong Filipino.",
-    "ano ang 1 dagdagan ng 1": "Ang 1 dagdagan ng 1 ay 2.",
-    "ano ang 2 dagdagan ng 2": "Ang 2 dagdagan ng 2 ay 4.",
-    "ano ang 5 dagdagan ng 5": "Ang 5 dagdagan ng 5 ay 10.",
+    "ano ang 1 dagdagan ng 1": "Ang 1 dagdag 1 ay 2.",
+    "ano ang 2 dagdagan ng 2": "Ang 2 dagdag 2 ay 4.",
+    "ano ang 5 dagdagan ng 5": "Ang 5 dagdag 5 ay 10.",
     "ano ang 10 bawas 5": "Ang 10 bawas 5 ay 5.",
     "how to read braille": "Braille is read with fingertips by feeling the patterns of raised dots from left to right.",
     "what is brailce": "Brailce is an interactive voice-assisted tutor for learning Braille.",
+    "who is the national hero of the philippines": "Dr. Jose Rizal is the national hero of the Philippines.",
+    "what is the national bird of the philippines": "The Philippine Eagle is the national bird of the Philippines.",
+    "what is the national flower of the philippines": "Sampaguita is the national flower of the Philippines.",
+    "what is the sun": "The Sun is the star at the center of our solar system that provides light and heat.",
+    "what is the moon": "The Moon is Earth's only natural satellite that orbits our planet.",
+    "how many letters are in the english alphabet": "There are 26 letters in the English alphabet.",
+    "ilan ang titik sa alpabetong ingles": "Mayroong 26 na titik sa alpabetong Ingles.",
+    "ano ang uncontracted braille": "Ang uncontracted Braille ay kilala rin bilang Grade 1 Braille na nagbabaybay ng bawat titik nang buo.",
 }
+
+
+_FILIPINO_MARKERS = {
+    "ang", "ng", "sa", "mga", "ay", "na", "at", "ito", "iyan", "para", "dahil",
+    "kung", "hindi", "oo", "may", "mayroon", "gamit", "mula", "tungkol", "nang",
+    "si", "ni", "tayo", "kami", "sila", "ako", "ikaw", "siya", "natin", "nila",
+    "isang", "bilang", "bawat", "araw", "taon", "oras", "sagot", "tanong", "mabuti",
+    "masaya", "walang", "anuman", "salamat", "paumanhin", "pakiusap",
+}
+_ENGLISH_MARKERS = {
+    "the", "is", "are", "was", "were", "this", "that", "with", "from", "they",
+    "what", "which", "where", "when", "because", "system", "used", "can", "have",
+    "for", "you", "your", "and", "or", "in", "on", "of", "to", "an", "about",
+    "there", "these", "those", "does", "did", "will", "would", "could", "should",
+}
+
+
+def is_mostly_english(text: str) -> bool:
+    """Return True if text appears to be mostly English rather than Filipino."""
+    if not text or not text.strip():
+        return True
+    import re
+    words = re.findall(r"[a-zA-Z']+", text.lower())
+    if not words:
+        return True
+    en_hits = sum(1 for w in words if w in _ENGLISH_MARKERS)
+    fil_hits = sum(1 for w in words if w in _FILIPINO_MARKERS)
+    if fil_hits == 0 and en_hits >= 1:
+        return True
+    return en_hits > fil_hits
+
+
+def clean_ai_response(raw_reply: str) -> str:
+    """
+    Strict post-processing filter for Ollama output:
+    1. Strip thinking tokens <think>...</think>, markdown, emojis, quotes, bullets.
+    2. Strip conversational prefixes: AI:, Assistant:, Answer:, Sagot:, Sure!, Of course!, etc.
+    3. Retain at most the first 2 complete sentences.
+    4. Ensure no cut-off trailing fragment.
+    """
+    if not raw_reply:
+        return ""
+
+    reply = raw_reply.strip()
+    import re
+    # 1. Strip reasoning, emojis/symbols, and markdown
+    reply = re.sub(r"<think>[\s\S]*?</think>", "", reply, flags=re.IGNORECASE).strip()
+    reply = re.sub(r"\*\*([^*]+)\*\*", r"\1", reply)
+    reply = re.sub(r"\*([^*]+)\*", r"\1", reply)
+    reply = re.sub(r"`([^`]+)`", r"\1", reply)
+    reply = re.sub(r"^[•\*\-\+]\s+", "", reply, flags=re.MULTILINE)
+    # Remove emojis / non-Latin decorative unicode symbols while preserving ASCII + Latin-1 (ñ)
+    reply = re.sub(r"[^\x20-\x7EñÑáéíóúÁÉÍÓÚ\n]", "", reply)
+
+    # 2. Strip conversational / persona prefixes
+    prefixes_to_strip = [
+        r"^ai\s*:\s*",
+        r"^assistant\s*:\s*",
+        r"^answer\s*:\s*",
+        r"^sagot\s*:\s*",
+        r"^tugon\s*:\s*",
+        r"^brailce\s*:\s*",
+        r"^sure[!,.]\s*",
+        r"^of course[!,.]\s*",
+        r"^certainly[!,.]\s*",
+        r"^syempre[!,.]\s*",
+        r"^oo[!,.]\s*",
+        r"^hello[!,.]\s*",
+        r"^hi[!,.]\s*",
+        r"^kumusta[!,.]\s*",
+        r"^as an ai[^,.]*[,.]\s*",
+        r"^i am here to[^,.]*[,.]\s*",
+        r"^let's talk about[^,.]*[,.]\s*",
+    ]
+    for pattern in prefixes_to_strip:
+        reply = re.sub(pattern, "", reply, flags=re.IGNORECASE).strip()
+
+    reply = re.sub(r"\s+", " ", reply).strip()
+
+    # 3. Extract at most the first 2 complete sentences
+    sentence_matches = re.findall(r'[^.!?]+[.!?]', reply)
+    if sentence_matches:
+        reply = " ".join(s.strip() for s in sentence_matches[:2]).strip()
+    else:
+        last_punct = max(reply.rfind("."), reply.rfind("!"), reply.rfind("?"))
+        if last_punct != -1:
+            reply = reply[:last_punct + 1].strip()
+
+    return reply
 
 
 class OllamaClient:
@@ -207,36 +310,80 @@ class OllamaClient:
 
         # 1. First check comprehensive built-in Factual Q&A dictionary
         import re
-        clean_q = re.sub(r"[^\w\s]", "", prompt.strip().lower())
+        clean_q = re.sub(r"[^\w\s]", "", prompt.replace("-", " ").strip().lower())
         clean_q = " ".join(clean_q.split())
         if clean_q in FACTUAL_QA_RESPONSES:
             logger.info("Factual QA matched for query %r", clean_q)
             return FACTUAL_QA_RESPONSES[clean_q]
 
+        # 2. Check if the query is an arithmetic question asked in AI mode
+        try:
+            from brailce.braille.arithmetic import SafeArithmetic
+            math_match = re.search(r"(?:what\s+is\s+|ano\s+ang\s+)?(\d+(?:\.\d+)?\s*[\+\-\*\/×÷]\s*\d+(?:\.\d+)?)", prompt, re.IGNORECASE)
+            if math_match:
+                math_expr = math_match.group(1).strip()
+                sol = SafeArithmetic.solve(math_expr, language=language)
+                if sol.is_valid:
+                    logger.info("AI mode solved arithmetic query: %r -> %r", math_expr, sol.explanation)
+                    return sol.explanation
+        except Exception:
+            pass
+
         # Check model availability
         resolved = self.resolve_model()
         if not resolved:
             logger.error("No compatible model is installed in Ollama.")
-            if language.lower() == "fil":
-                return "Hindi naka-install ang AI model. Mangyaring i-install ang modelo."
-            return "Required AI model is not installed. Please install an Ollama model."
+            from brailce.i18n.strings import get_string
+            return get_string("AI_MODEL_MISSING", language)
 
+        lang = (language or "en").lower()
+        effective_system = FILIPINO_SYSTEM_PROMPT if lang == "fil" else self.system_prompt
+        raw_reply = self._call_ollama_once(prompt, effective_system)
+        if raw_reply is None:
+            return None
+
+        reply = clean_ai_response(raw_reply)
+        if lang == "fil":
+            if not reply or is_mostly_english(reply):
+                logger.info("Filipino AI post-validation triggered retry (reply=%r)", reply)
+                strict_prompt = f"Magsalita sa purong Tagalog lamang. Sagutin nang maikli: {prompt}"
+                raw_retry = self._call_ollama_once(strict_prompt, FILIPINO_SYSTEM_PROMPT)
+                retry_clean = clean_ai_response(raw_retry) if raw_retry else ""
+                if retry_clean and not is_mostly_english(retry_clean):
+                    reply = retry_clean
+                else:
+                    from brailce.i18n.strings import get_string
+                    return get_string("AI_EMPTY_FALLBACK", "fil")
+
+        logger.info("Received and cleaned response from Ollama (len %d): %r", len(reply), reply)
+        return reply if reply else None
+
+    def _call_ollama_once(self, prompt: str, system_prompt: Optional[str]) -> Optional[str]:
+        """Execute a single stateless HTTP request to Ollama /api/generate."""
         url = f"{self.host}/api/generate"
-        payload = {
+        payload: dict = {
             "model": self.model,
             "prompt": prompt,
             "stream": False,
             "options": {
-                "num_predict": max(80, self.num_predict),
+                "num_predict": 60,
                 "num_thread": self.num_thread,
-                "temperature": 0.2,
-                "top_p": 0.9,
-                "stop": ["\n\n", "User:", "Question:", "Human:"],
-            }
+                "temperature": 0.1,
+                "top_p": 0.85,
+                "stop": [
+                    "\n\n",
+                    "\nQuestion:",
+                    "\nUser:",
+                    "Question:",
+                    "User:",
+                    "Human:",
+                    "Note:",
+                    "Brailce is",
+                ],
+            },
         }
-        effective_system = FILIPINO_SYSTEM_PROMPT if language.lower() == "fil" else self.system_prompt
-        if effective_system:
-            payload["system"] = effective_system
+        if system_prompt:
+            payload["system"] = system_prompt
         data = json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
@@ -247,25 +394,10 @@ class OllamaClient:
                 if response.status != 200:
                     logger.error("Ollama API returned status %d", response.status)
                     return None
-                
+
                 body = response.read().decode("utf-8")
                 response_json = json.loads(body)
-                reply = response_json.get("response", "").strip()
-
-                # Clean thinking tokens or markdown formatting
-                import re
-                reply = re.sub(r"<think>[\s\S]*?</think>", "", reply).strip()
-                reply = re.sub(r"\*\*([^*]+)\*\*", r"\1", reply)
-                reply = re.sub(r"^[•\*\-\+]\s+", "", reply, flags=re.MULTILINE)
-                reply = re.sub(r"\s+", " ", reply).strip()
-
-                # Strip trailing incomplete sentence fragment if model was cut off mid-sentence
-                last_punct = max(reply.rfind("."), reply.rfind("!"), reply.rfind("?"))
-                if last_punct != -1 and (len(reply) - 1 - last_punct) > 0:
-                    reply = reply[:last_punct + 1].strip()
-
-                logger.info("Received response from Ollama (len %d)", len(reply))
-                return reply if reply else None
+                return response_json.get("response", "").strip()
         except urllib.error.URLError as e:
             logger.error("Failed to connect to Ollama: %s", e)
             return None

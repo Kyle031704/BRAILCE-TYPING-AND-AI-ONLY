@@ -110,7 +110,6 @@ class BrailceApp:
         # ---- Display ----
         display_driver = self.config.display_driver
         if display_driver == "auto":
-            import os
             # On Raspberry Pi with SPI TFT or framebuffer, automatically use ILI9488 TFT; otherwise Console
             if os.path.exists("/dev/spidev0.0") or os.path.exists("/dev/fb1") or (os.path.exists("/dev/fb0") and os.path.exists("/proc/device-tree/model")):
                 from brailce.display.ili9488_display import ILI9488Display
@@ -169,8 +168,8 @@ class BrailceApp:
         
         # ---- Vision ----
         vision_driver = self.config.get("vision", "driver", default="auto")
+        test_image = os.getenv("BRAILCE_TEST_IMAGE") or self.config.get("vision", "test_image_path", default="")
         if vision_driver == "simulated":
-            test_image = self.config.get("vision", "test_image_path", default="")
             self.camera = SimulatedCamera(image_path=test_image if test_image else None)
         elif vision_driver == "picamera":
             self.camera = PiCameraDevice()
@@ -180,14 +179,19 @@ class BrailceApp:
                 self.camera = pi_cam
                 logger.info("Using physical Raspberry Pi Camera Module.")
             else:
-                test_image = self.config.get("vision", "test_image_path", default="")
                 self.camera = SimulatedCamera(image_path=test_image if test_image else None)
                 logger.info("Physical camera not active — using SimulatedCamera fallback.")
             
         model_path = self.config.get("vision", "model_path", default="brailce/vision/yolov8_braille.pt")
         conf = float(self.config.get("vision", "confidence_threshold", default=0.22))
         iou = float(self.config.get("vision", "iou_threshold", default=0.45))
-        self.obr = OBREngine(model_path=model_path, conf=conf, iou=iou)
+        use_yolo_secondary = bool(self.config.get("vision", "use_yolo_secondary", default=False))
+        self.obr = OBREngine(
+            model_path=model_path,
+            conf=conf,
+            iou=iou,
+            use_yolo_secondary=use_yolo_secondary,
+        )
 
         # ---- Braille Mapping ----
         self.mapping_service = BrailleMappingService()
@@ -216,9 +220,9 @@ class BrailceApp:
         self.display.show_mode(self.state.mode)
         self.display.show_text_buffer(self.state.text_buffer)
 
-        # Initial speech announcement so learner knows device is ready
+        # Initial speech announcement from i18n table via unified queue
         if self.speech:
-            self.speech.speak_text("Free Input Mode. Ready to type.", interrupt=False)
+            self.speech.speak_mode_intro(self.state.mode, interrupt=False)
 
         logger.info("Brailce application setup complete.")
         logger.info(
@@ -320,20 +324,24 @@ class BrailceApp:
 
             if event.event_type == EventType.VOLUME_UP:
                 new_vol = self.state.increase_volume()
+                from brailce.i18n.strings import get_string
+                msg = get_string("VOLUME_ANNOUNCE", self.state.language, vol=new_vol)
                 if self.display:
-                    self.display.show_status(f"Volume: {new_vol}")
+                    self.display.show_status(msg)
                 if self.speech:
                     self.speech.set_volume(new_vol)
-                    self.speech.speak_text(f"Volume {new_vol} percent", interrupt=True)
+                    self.speech.speak_text(msg, interrupt=True)
                 return
 
             if event.event_type == EventType.VOLUME_DOWN:
                 new_vol = self.state.decrease_volume()
+                from brailce.i18n.strings import get_string
+                msg = get_string("VOLUME_ANNOUNCE", self.state.language, vol=new_vol)
                 if self.display:
-                    self.display.show_status(f"Volume: {new_vol}")
+                    self.display.show_status(msg)
                 if self.speech:
                     self.speech.set_volume(new_vol)
-                    self.speech.speak_text(f"Volume {new_vol} percent", interrupt=True)
+                    self.speech.speak_text(msg, interrupt=True)
                 return
 
             # ---- Mode-specific events ----
@@ -343,34 +351,30 @@ class BrailceApp:
             logger.error("Error handling input event %s: %s", event, exc, exc_info=True)
 
     def toggle_language(self) -> str:
-        """Toggle between English ('en') and Filipino ('fil') globally."""
+        """Toggle between English ('en') and Filipino ('fil') globally via unified speech queue."""
+        from brailce.i18n.strings import get_string
+
         new_lang = self.state.toggle_language()
         if self.speech and hasattr(self.speech, "language"):
             self.speech.language = new_lang
-        from brailce.speech.filipino_engine import get_language_announcement_path
-        from brailce.speech.audio_device import AudioDeviceCoordinator
+        if self.display and hasattr(self.display, "set_language"):
+            self.display.set_language(new_lang)
 
-        status_text = "[FIL] Wikang Filipino" if new_lang == "fil" else "[EN] English"
+        status_key = "LANG_STATUS_FIL" if new_lang == "fil" else "LANG_STATUS_EN"
+        status_text = get_string(status_key, new_lang)
         if self.display:
             self.display.show_status(status_text)
 
-        ann_path = get_language_announcement_path(new_lang)
-        if ann_path and os.path.isfile(ann_path):
-            import threading
-            threading.Thread(
-                target=AudioDeviceCoordinator.play_wav_file,
-                args=(ann_path, "language_toggle", 5.0),
-                daemon=True,
-                name="brailce-lang-toggle-audio"
-            ).start()
-        elif self.speech:
-            self.speech.speak_text("Wikang Filipino" if new_lang == "fil" else "English language", interrupt=True)
+        if self.speech:
+            self.speech.speak_language_switch(new_lang, interrupt=True)
 
         logger.info("Language toggled to: %s", new_lang)
         return new_lang
 
     def _on_mode_change(self, old_mode: AppMode, new_mode: AppMode) -> None:
-        """Handle mode transitions."""
+        """Handle mode transitions using unified i18n strings and the single speech queue."""
+        from brailce.i18n.strings import get_mode_intro
+
         # 1. Immediately stop any in-flight speech from the previous mode
         if self.speech:
             try:
@@ -394,44 +398,16 @@ class BrailceApp:
             new_mode_instance.on_enter()
             self._active_mode = new_mode_instance
 
-        # Update display
+        # Update display & speak identical localized intro string through single queue
+        intro_text = get_mode_intro(new_mode, language=self.state.language)
         if self.display:
             self.display.show_mode(new_mode)
+            self.display.show_status(intro_text)
 
-        # Announce mode change clearly
         if self.speech:
-            if self.state.language == "fil":
-                from brailce.speech.filipino_engine import get_filipino_mode_path
-                from brailce.speech.audio_device import AudioDeviceCoordinator
-                mode_wav = get_filipino_mode_path(new_mode)
-                if mode_wav and os.path.isfile(mode_wav):
-                    import threading
-                    threading.Thread(
-                        target=AudioDeviceCoordinator.play_wav_file,
-                        args=(mode_wav, "mode_announce", 5.0),
-                        daemon=True,
-                        name="brailce-mode-announce-fil"
-                    ).start()
-                else:
-                    fil_ann = {
-                        AppMode.FREE_INPUT: "Malayang Pag-type. Mag-type ng mga titik at salita.",
-                        AppMode.MATH: "Modong Matematika. Mag-type ng bilang at operasyon.",
-                        AppMode.AI_ASSISTANT: "Modong A I Assistant. Mag-type ng iyong tanong at pindutin ang Enter.",
-                        AppMode.SCANNER: "Modong Scanner ng Braille. Pindutin ang Enter upang mag-scan.",
-                    }
-                    announcement = fil_ann.get(new_mode, f"{new_mode.display_name()}.")
-                    self.speech.speak_text(announcement, interrupt=False)
-            else:
-                mode_announcements = {
-                    AppMode.FREE_INPUT: "Free Input Mode.",
-                    AppMode.MATH: "Math Mode.",
-                    AppMode.AI_ASSISTANT: "AI Assistant Mode.",
-                    AppMode.SCANNER: "Scanner Mode.",
-                }
-                announcement = mode_announcements.get(new_mode, f"{new_mode.display_name()}.")
-                self.speech.speak_text(announcement, interrupt=False)
+            self.speech.speak_mode_intro(new_mode, interrupt=False)
 
-        logger.info("Mode changed to: %s", new_mode.display_name())
+        logger.info("Mode changed to: %s (%s)", new_mode.display_name(), self.state.language)
 
     def _signal_handler(self, signum: int, frame: object) -> None:
         """Handle interrupt signals gracefully."""

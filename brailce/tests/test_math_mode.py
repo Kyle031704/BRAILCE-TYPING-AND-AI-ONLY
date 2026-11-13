@@ -15,6 +15,7 @@ from brailce.core.app import BrailceApp
 from brailce.core.events import AppMode, EventType, InputEvent
 from brailce.core.state import ApplicationState
 from brailce.modes.math_mode import MathMode
+from brailce.speech.service import SpeechService
 
 
 @pytest.fixture
@@ -23,7 +24,7 @@ def mock_app() -> BrailceApp:
     app = MagicMock(spec=BrailceApp)
     app.state = ApplicationState()
     app.display = MagicMock()
-    app.speech = MagicMock()
+    app.speech = MagicMock(spec=SpeechService)
     app.encoder = MagicMock()
     app.config = MagicMock()
     app.config.get.return_value = True
@@ -58,7 +59,7 @@ class TestMathMode:
         assert mock_app.state.math_buffer == "5"
         mock_app.display.show_character.assert_called_with("5")
         mock_app.display.show_text_buffer.assert_called_with("5")
-        mock_app.speech.speak.assert_called_with("five")
+        mock_app.speech.speak_character.assert_called_with("5")
 
     def test_handle_operator_input(self, math_mode: MathMode, mock_app: BrailceApp) -> None:
         mapping = BrailleMapping(
@@ -74,7 +75,7 @@ class TestMathMode:
         math_mode.handle_event(event)
 
         assert mock_app.state.math_buffer == "+"
-        mock_app.speech.speak.assert_called_with("plus")
+        mock_app.speech.speak_character.assert_called_with("+")
 
     def test_handle_space(self, math_mode: MathMode, mock_app: BrailceApp) -> None:
         mock_app.state.math_buffer = "5"

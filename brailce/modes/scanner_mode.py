@@ -1,9 +1,11 @@
 """
-Brailce Mode – Scanner Mode (Phase 9)
-=====================================
+Brailce Mode — Scanner Mode
+===========================
 
-Scanner Mode utilizes a camera and Optical Braille Recognition (OBR)
-to read physical Braille paper and speak it out loud.
+Live viewfinder with cheap classical Braille presence detection (~3-5 Hz,
+hysteresis + cooldown), sharpest still-frame capture on Enter, classical dot-grid
+Grade 1 Braille decoding, and systematic letter-by-letter -> word-by-word readout
+that cancels cleanly on any key.
 """
 
 from __future__ import annotations
@@ -11,23 +13,55 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
-from typing import Optional, Any
 from brailce.core.events import AppMode, EventType, InputEvent
+from brailce.i18n.strings import get_mode_name, get_string
 from brailce.modes.base_mode import BaseMode
+from brailce.vision.camera import CameraNotConnectedError, compute_sharpness
 
 logger = logging.getLogger(__name__)
 
+
 class ScannerMode(BaseMode):
+    """Optical Braille Recognition (OBR) camera scanner mode."""
+
+    # Presence detection tuning (~3-4 Hz)
+    PRESENCE_POLL_S: float = 0.28
+    PRESENCE_POSITIVE_FRAMES: int = 3
+    PRESENCE_NEGATIVE_FRAMES: int = 4
+    ANNOUNCEMENT_COOLDOWN_S: float = 6.0
+
+    # Readout pacing (seconds; overridable in tests)
+    CHAR_PACE_S: float = 0.42
+    WORD_PAUSE_S: float = 0.35
+    LINE_PAUSE_S: float = 0.60
+
+    _REASON_TO_STRING_KEY = {
+        "blurry": "SCANNER_BLURRY",
+        "too_small": "SCANNER_MOVE_CLOSER",
+        "too_large": "SCANNER_MOVE_FARTHER",
+        "no_braille": "SCANNER_NO_BRAILLE",
+    }
+
     def __init__(self, app: Any) -> None:
         super().__init__(app)
         self.scanned_text: Optional[str] = None
-        self._is_scanning = False
-        self._preview_running = False
+        self._last_result: Optional[Dict[str, Any]] = None
+        self._is_scanning: bool = False
+        self._is_reading: bool = False
+        self._preview_running: bool = False
         self._preview_thread: Optional[threading.Thread] = None
         self._detector_thread: Optional[threading.Thread] = None
+        self._readout_thread: Optional[threading.Thread] = None
+        self._stop_readout_event = threading.Event()
+        self._frame_lock = threading.Lock()
+        self._sharp_frames: Deque[Tuple[float, Any]] = deque(maxlen=5)
         self._latest_frame: Any = None
         self._braille_detected: Optional[bool] = None
+        self._camera_error_reported: bool = False
+        self._last_announce_time: float = 0.0
 
     @property
     def mode_type(self) -> AppMode:
@@ -35,153 +69,376 @@ class ScannerMode(BaseMode):
 
     @property
     def display_name(self) -> str:
-        return "Scanner Mode"
+        lang = self.state.language if self.state else "en"
+        return get_mode_name(self.mode_type, lang)
+
+    def _lang(self) -> str:
+        return self.state.language if self.state else "en"
+
+    def _announce_capital_sign(self) -> bool:
+        cfg = getattr(self.app, "config", None)
+        if cfg and hasattr(cfg, "get"):
+            return bool(cfg.get("vision", "announce_capital_sign", default=False))
+        return False
+
+    def _stop_readout(self, announce_stopped: bool = False) -> None:
+        """Stop active letter-by-letter/word-by-word readout immediately."""
+        was_reading = self._is_reading
+        self._stop_readout_event.set()
+        self._is_reading = False
+        if getattr(self.app, "speech", None):
+            self.app.speech.stop()
+        if announce_stopped and was_reading and getattr(self.app, "display", None):
+            self.app.display.show_status(get_string("SCANNER_STOPPED", self._lang()))
 
     def handle_event(self, event: InputEvent) -> None:
-        """Process an input event in Scanner Mode."""
-        if self.state.ai_processing or self._is_scanning:
+        """Handle user input in Scanner Mode."""
+        if self._is_reading:
+            # Any key cleanly interrupts active speech readout
+            self._stop_readout(announce_stopped=True)
+            if event.event_type == EventType.CLEAR_PRESSED:
+                self._reset_scan_state()
+            return
+
+        if self._is_scanning or self.state.ai_processing:
             return
 
         if event.event_type == EventType.ENTER_PRESSED:
-            if self.scanned_text:
-                self._speak_result()
+            if self._last_result and self.scanned_text:
+                self._start_readout_thread(self._last_result)
             else:
                 self._start_scan()
         elif event.event_type == EventType.CLEAR_PRESSED:
-            self.scanned_text = None
-            self._braille_detected = None
-            if self.app.display:
-                self.app.display.show_status("Position Braille inside box | Press Enter to Scan")
+            self._reset_scan_state()
 
-    def _start_scan(self) -> None:
-        """Trigger the scanning loop."""
-        self._is_scanning = True
+    def _reset_scan_state(self) -> None:
+        """Clear previously scanned text and return to viewfinder ready state."""
+        lang = self._lang()
         self.scanned_text = None
+        self._last_result = None
+        self._braille_detected = None
+        if getattr(self.app, "display", None):
+            ready = get_string("SCANNER_READY", lang)
+            if hasattr(self.app.display, "show_scanner_viewfinder"):
+                self.app.display.show_scanner_viewfinder(status=ready)
+            else:
+                self.app.display.show_status(ready)
 
-        if self.app.speech:
-            scan_prompt = "Nag-i-scan..." if self.state.language == "fil" else "Scanning document"
-            self.app.speech.speak_text(scan_prompt, interrupt=False)
-
-        threading.Thread(target=self._scan_loop, daemon=True).start()
+    def _report_camera_missing(self) -> None:
+        """Surface missing camera clearly via LCD + Voice once (no fake Braille)."""
+        if self._camera_error_reported:
+            return
+        self._camera_error_reported = True
+        msg = get_string("SCANNER_CAMERA_NOT_CONNECTED", self._lang())
+        if getattr(self.app, "display", None):
+            if hasattr(self.app.display, "show_error"):
+                self.app.display.show_error(msg)
+            else:
+                self.app.display.show_status(msg)
+        if getattr(self.app, "speech", None):
+            self.app.speech.speak_text(msg, interrupt=True)
 
     def _detection_worker(self) -> None:
-        """Periodic background presence detector to give live feedback without lagging the preview."""
-        _last_detected_state = None
+        """
+        Cheap classical Braille presence monitor (~3-4 Hz) with hysteresis + cooldown.
+        Speaks SCANNER_BRAILLE_DETECTED once per sheet placement without nagging.
+        """
+        pos_streak = 0
+        neg_streak = 0
+
         while self._preview_running:
-            if not self._is_scanning and self._latest_frame is not None and getattr(self.app, "obr", None):
-                try:
-                    detected = self.app.obr.detect_braille_presence(self._latest_frame)
-                    self._braille_detected = detected
-                    # Announce detection state changes vocally
-                    if detected != _last_detected_state:
-                        if detected is True and self.app.speech:
-                            prompt = "Nakitang Braille. Pindutin ang Enter upang isalin." if self.state.language == "fil" else "Braille detected. Press enter to translate."
-                            self.app.speech.speak_text(prompt, interrupt=False)
-                        elif detected is False and _last_detected_state is not None and self.app.speech:
-                            prompt = "Walang nakitang Braille. Mangyaring ayusin ang papel." if self.state.language == "fil" else "No Braille detected. Please adjust the sheet."
-                            self.app.speech.speak_text(prompt, interrupt=False)
-                        _last_detected_state = detected
-                except Exception as exc:
-                    logger.debug("Presence detection error: %s", exc)
-            time.sleep(0.7)  # Check every ~700ms
+            if self._is_scanning or self._is_reading or not getattr(self.app, "obr", None):
+                time.sleep(self.PRESENCE_POLL_S)
+                continue
+
+            with self._frame_lock:
+                frame = self._latest_frame
+
+            if frame is None:
+                time.sleep(self.PRESENCE_POLL_S)
+                continue
+
+            try:
+                detected = bool(self.app.obr.detect_braille_presence(frame))
+                if detected:
+                    pos_streak += 1
+                    neg_streak = 0
+                    if pos_streak >= self.PRESENCE_POSITIVE_FRAMES:
+                        became_detected = self._braille_detected is not True
+                        self._braille_detected = True
+                        now = time.monotonic()
+                        if (
+                            became_detected
+                            and not self.scanned_text
+                            and (now - self._last_announce_time) >= self.ANNOUNCEMENT_COOLDOWN_S
+                        ):
+                            self._last_announce_time = now
+                            if getattr(self.app, "speech", None):
+                                self.app.speech.speak_text(
+                                    get_string("SCANNER_BRAILLE_DETECTED", self._lang()),
+                                    interrupt=False,
+                                )
+                else:
+                    neg_streak += 1
+                    pos_streak = 0
+                    if neg_streak >= self.PRESENCE_NEGATIVE_FRAMES:
+                        self._braille_detected = False
+            except Exception as exc:
+                logger.debug("Presence detection error: %s", exc)
+
+            time.sleep(self.PRESENCE_POLL_S)
 
     def _preview_loop(self) -> None:
-        """Continuously update live camera preview for sighted users/instructors."""
+        """Live camera viewfinder loop maintaining a rolling buffer of sharpest frames."""
         while self._preview_running:
-            if not self._is_scanning and getattr(self.app, "camera", None) and getattr(self.app, "display", None):
-                frame = self.app.camera.capture_image()
+            cam = getattr(self.app, "camera", None)
+            if not self._is_scanning and cam is not None:
+                if hasattr(cam, "is_available") and not cam.is_available():
+                    self._report_camera_missing()
+                    time.sleep(0.6)
+                    continue
+
+                try:
+                    frame = cam.capture_image()
+                except CameraNotConnectedError:
+                    self._report_camera_missing()
+                    time.sleep(0.6)
+                    continue
+                except Exception as exc:
+                    logger.debug("Preview capture error: %s", exc)
+                    frame = None
+
                 if frame is not None:
-                    self._latest_frame = frame
-                    if self.scanned_text:
-                        status = "Translated! Press Enter to Read"
-                    elif self._braille_detected is True:
-                        status = "✓ Braille Detected! Press ENTER to Translate"
-                    elif self._braille_detected is False:
-                        status = "⚠ No Braille Detected - Adjust Sheet"
-                    else:
-                        status = "Position Braille inside box | Press Enter to Scan"
-                    self.app.display.show_camera_preview(frame, status=status)
-            time.sleep(0.18)  # ~5.5 fps viewfinder rate for smooth, tear-free SPI rendering
+                    self._camera_error_reported = False
+                    sharpness = compute_sharpness(frame)
+                    with self._frame_lock:
+                        self._latest_frame = frame
+                        self._sharp_frames.append((sharpness, frame))
 
-    def _scan_loop(self) -> None:
-        """Capture and evaluate the Braille document."""
-        if self.app.display:
-            self.app.display.show_status("Scanning document with AI...")
+                    if getattr(self.app, "display", None) and not self._is_reading:
+                        lang = self._lang()
+                        if self.scanned_text:
+                            status = self.scanned_text
+                        elif self._braille_detected is True:
+                            status = get_string("SCANNER_BRAILLE_DETECTED", lang)
+                        else:
+                            status = get_string("SCANNER_READY", lang)
+                        self.app.display.show_camera_preview(frame, status=status)
 
-        if not self.app.camera or not self.app.obr:
-            if self.app.display:
-                self.app.display.show_status("Hardware not configured.")
-            if self.app.speech:
-                self.app.speech.speak_text("Camera hardware not configured.", interrupt=True)
-            self._is_scanning = False
-            return
+            time.sleep(0.18)
 
-        image = self.app.camera.capture_image()
-        if image is None:
-            if self.app.display:
-                self.app.display.show_status("Error: Could not capture image.")
-            if self.app.speech:
-                self.app.speech.speak_text("Error capturing image from camera.", interrupt=True)
-            self._is_scanning = False
-            return
+    def _capture_best_still(self) -> Optional[Any]:
+        """Acquire full-res still (sharpest of N) or sharpest buffered preview frame."""
+        cam = getattr(self.app, "camera", None)
+        if cam is None or (hasattr(cam, "is_available") and not cam.is_available()):
+            self._report_camera_missing()
+            return None
 
-        h, w = image.shape[:2]
-        mx, my = int(w * 0.08), int(h * 0.08)
-        cropped_image = image[my:h - my, mx:w - mx]
-        result = self.app.obr.process_image(cropped_image)
-        if not result.get("readable"):
-            # Fallback to full uncropped frame
+        try:
+            if hasattr(cam, "capture_sharpest"):
+                frame = cam.capture_sharpest(n=5)
+                if frame is not None:
+                    return frame
+            if hasattr(cam, "capture_still"):
+                frame = cam.capture_still()
+                if frame is not None:
+                    return frame
+            return cam.capture_image()
+        except CameraNotConnectedError:
+            self._report_camera_missing()
+            return None
+        except Exception as exc:
+            logger.warning("Still capture failed, falling back to sharpest preview: %s", exc)
+
+        with self._frame_lock:
+            if self._sharp_frames:
+                return max(self._sharp_frames, key=lambda item: item[0])[1]
+            return self._latest_frame
+
+    def _start_scan(self) -> None:
+        """Start full capture + classical OBR decode in background thread."""
+        self._is_scanning = True
+        self.scanned_text = None
+        self._last_result = None
+        lang = self._lang()
+
+        if getattr(self.app, "display", None):
+            self.app.display.show_status(get_string("SCANNER_SCANNING", lang))
+        if getattr(self.app, "speech", None):
+            self.app.speech.speak_text(get_string("SCANNER_SCANNING", lang), interrupt=False)
+
+        threading.Thread(target=self._scan_worker, daemon=True).start()
+
+    def _scan_worker(self) -> None:
+        """Capture sharpest image, run OBR engine, report actionable error or start readout."""
+        lang = self._lang()
+        try:
+            if not getattr(self.app, "obr", None):
+                self._report_camera_missing()
+                return
+
+            image = self._capture_best_still()
+            if image is None:
+                if not self._camera_error_reported:
+                    msg = get_string("SCANNER_NO_BRAILLE", lang)
+                    if getattr(self.app, "display", None):
+                        self.app.display.show_status(msg)
+                    if getattr(self.app, "speech", None):
+                        self.app.speech.speak_text(msg, interrupt=True)
+                return
+
             result = self.app.obr.process_image(image)
+            if not result.get("readable") or not str(result.get("text", "")).strip():
+                reason = str(result.get("reason", "no_braille"))
+                key = self._REASON_TO_STRING_KEY.get(reason, "SCANNER_NO_BRAILLE")
+                msg = get_string(key, lang)
+                self._braille_detected = False
+                if getattr(self.app, "display", None):
+                    self.app.display.show_status(msg)
+                if getattr(self.app, "speech", None):
+                    self.app.speech.speak_text(msg, interrupt=True)
+                return
 
-        if result.get("readable") and result.get("text", "").strip():
-            self.scanned_text = result.get("text").strip()
-            self._is_scanning = False
-            if self.app.display:
-                self.app.display.show_status("Braille translated! Press Enter to Read.")
+            self.scanned_text = str(result["text"]).strip()
+            self._last_result = result
+            if getattr(self.app, "display", None):
                 self.app.display.show_text_buffer(self.scanned_text)
-            if self.app.speech:
-                self.app.speech.speak_text("Braille translated. Press Enter to hear it.", interrupt=False)
-        else:
+        finally:
             self._is_scanning = False
-            self._braille_detected = False
-            err_msg = "Walang nakitang Braille" if self.state.language == "fil" else "No Braille Detected - Adjust Sheet"
-            if self.app.display:
-                self.app.display.show_status(f"⚠ {err_msg}")
-            if self.app.speech:
-                prompt = "Walang nakitang Braille." if self.state.language == "fil" else "No Braille detected. Please adjust the sheet."
-                self.app.speech.speak_text(prompt, interrupt=True)
 
-    def _speak_result(self) -> None:
-        """Speak the text that was scanned upon user confirmation."""
-        text = self.scanned_text
-        self.scanned_text = None  # Reset for next scan
-        self._braille_detected = None
+        if self._last_result is not None:
+            self._start_readout_thread(self._last_result)
 
-        if self.app.display:
-            self.app.display.show_status("Reading...")
-            self.app.display.show_text_buffer(text)
+    def _start_readout_thread(self, result: Dict[str, Any]) -> None:
+        """Launch interruptible letter-by-letter + word-by-word readout."""
+        self._stop_readout(announce_stopped=False)
+        self._stop_readout_event.clear()
+        self._is_reading = True
+        self._readout_thread = threading.Thread(
+            target=self._readout_worker,
+            args=(result,),
+            daemon=True,
+        )
+        self._readout_thread.start()
 
-        if self.app.speech and text:
-            self.app.speech.speak_text(text, interrupt=False)
+    def _speak_completed_word(self, word_chars: List[str], has_unknown: bool) -> None:
+        """Speak an assembled word/number once all of its cells have been spelled out."""
+        speech = getattr(self.app, "speech", None)
+        if not speech or not word_chars or has_unknown:
+            return
+        word = "".join(word_chars)
+        if word.isdigit():
+            speech.speak_text(word, interrupt=False)
+        elif word.isalpha():
+            if hasattr(speech, "speak_word_clean"):
+                speech.speak_word_clean(word, interrupt=False)
+            else:
+                speech.speak_word(word)
+        else:
+            speech.speak_text(word, interrupt=False)
 
-        if self.app.display:
-            self.app.display.show_status("Position Braille inside box | Press Enter to Scan")
+    def _readout_worker(self, result: Dict[str, Any]) -> None:
+        """
+        Systematically read decoded cells:
+          1. Each cell letter/digit spoken & displayed (show_braille + show_character)
+          2. Completed word/number spoken cleanly at word end
+          3. Unknown cell spoken as SCANNER_UNKNOWN_CELL
+        Interrupts cleanly whenever _stop_readout_event is set.
+        """
+        lang = self._lang()
+        speech = getattr(self.app, "speech", None)
+        display = getattr(self.app, "display", None)
+        cells: List[Dict[str, Any]] = list(result.get("cells") or [])
+
+        try:
+            if not cells:
+                text = str(result.get("text", "")).strip()
+                if text and speech:
+                    speech.speak_text(text, interrupt=False)
+                return
+
+            announce_cap = self._announce_capital_sign()
+            cur_word: List[str] = []
+            cur_has_unknown = False
+            prev_word_idx: Optional[int] = None
+            prev_line_idx: Optional[int] = None
+
+            for cell in cells:
+                if self._stop_readout_event.is_set():
+                    return
+
+                word_idx = cell.get("word_index", 0)
+                line_idx = cell.get("line_index", 0)
+
+                if prev_word_idx is not None and (word_idx != prev_word_idx or line_idx != prev_line_idx):
+                    self._speak_completed_word(cur_word, cur_has_unknown)
+                    cur_word = []
+                    cur_has_unknown = False
+                    pause = self.LINE_PAUSE_S if (prev_line_idx is not None and line_idx != prev_line_idx) else self.WORD_PAUSE_S
+                    if self._stop_readout_event.wait(pause):
+                        return
+
+                prev_word_idx = word_idx
+                prev_line_idx = line_idx
+
+                kind = cell.get("kind", "char")
+                ch = str(cell.get("char", ""))
+                dots_str = str(cell.get("dots_str", ""))
+
+                if kind == "indicator":
+                    if ch == "^" and announce_cap and speech:
+                        speech.speak_text(get_string("SCANNER_CAPITAL", lang), interrupt=False)
+                        if self._stop_readout_event.wait(self.CHAR_PACE_S):
+                            return
+                    continue
+
+                if display:
+                    if hasattr(display, "show_character"):
+                        display.show_character(ch)
+                    if dots_str and hasattr(display, "show_braille"):
+                        display.show_braille(ch, dots_str, "")
+
+                if kind == "unknown" or ch == "?":
+                    cur_has_unknown = True
+                    cur_word.append("?")
+                    if speech:
+                        speech.speak_text(get_string("SCANNER_UNKNOWN_CELL", lang), interrupt=False)
+                elif ch:
+                    cur_word.append(ch)
+                    if speech:
+                        speech.speak_character(ch)
+
+                if self._stop_readout_event.wait(self.CHAR_PACE_S):
+                    return
+
+            if cur_word and not self._stop_readout_event.is_set():
+                self._speak_completed_word(cur_word, cur_has_unknown)
+        finally:
+            self._is_reading = False
+            if display and self.scanned_text and not self._stop_readout_event.is_set():
+                display.show_text_buffer(self.scanned_text)
 
     def on_enter(self) -> None:
         logger.info("Entered Scanner Mode.")
         self.scanned_text = None
+        self._last_result = None
         self._is_scanning = False
+        self._is_reading = False
         self._braille_detected = None
         self._latest_frame = None
-        if self.app.display:
+        self._sharp_frames.clear()
+        self._camera_error_reported = False
+        self._stop_readout_event.clear()
+
+        if getattr(self.app, "display", None):
             self.app.display.clear()
             self.app.display.show_mode(self.mode_type)
+            ready = get_string("SCANNER_READY", self._lang())
             if hasattr(self.app.display, "show_scanner_viewfinder"):
-                self.app.display.show_scanner_viewfinder()
+                self.app.display.show_scanner_viewfinder(status=ready)
             else:
-                self.app.display.show_status("Position Braille inside box | Press Enter to Scan")
+                self.app.display.show_status(ready)
 
-        # Start live camera viewfinder and detection loop
         self._preview_running = True
         self._preview_thread = threading.Thread(target=self._preview_loop, daemon=True)
         self._preview_thread.start()
@@ -192,7 +449,9 @@ class ScannerMode(BaseMode):
         logger.info("Exited Scanner Mode.")
         self._preview_running = False
         self._is_scanning = False
+        self._stop_readout(announce_stopped=False)
         self._braille_detected = None
         self._latest_frame = None
-        if self.app.display:
+        self._sharp_frames.clear()
+        if getattr(self.app, "display", None):
             self.app.display.close_camera_preview()

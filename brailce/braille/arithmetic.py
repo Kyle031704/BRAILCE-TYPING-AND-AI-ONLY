@@ -23,6 +23,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional, Tuple, List, Union
 
+from brailce.i18n.strings import get_string
+
 logger = logging.getLogger(__name__)
 
 
@@ -56,16 +58,18 @@ class SafeArithmetic:
     """
 
     @classmethod
-    def solve(cls, raw_expr: str) -> MathSolution:
+    def solve(cls, raw_expr: str, language: str = "en") -> MathSolution:
         """
         Parse and evaluate a math expression, generating a Grade 1 explanation.
 
         Args:
             raw_expr: A string such as "5 + 3", "9 - 4", "5+3=", or "12 + 5".
+            language: "en" for English, "fil" for Filipino (Tagalog).
 
         Returns:
             MathSolution dataclass.
         """
+        lang = language.lower() if language else "en"
         cleaned = raw_expr.strip()
         # Remove trailing equals if typed
         if cleaned.endswith("="):
@@ -75,43 +79,43 @@ class SafeArithmetic:
         cleaned = cleaned.replace("×", "*").replace("÷", "/")
 
         if not cleaned:
+            empty_exp = get_string("MATH_EMPTY_BUFFER", lang)
             return MathSolution(
                 expression="",
                 result=None,
                 result_str="",
-                explanation="Math buffer is empty. Please enter a math problem, such as 5 plus 3.",
-                short_step="Empty",
+                explanation=empty_exp,
+                short_step=get_string("BUFFER_EMPTY", lang),
                 is_valid=False,
-                error_message="Math buffer is empty."
+                error_message=empty_exp
             )
 
         # Check for invalid characters (letters, illegal symbols)
         invalid_chars = [ch for ch in cleaned if ch not in "0123456789+-*/. "]
         if invalid_chars:
+            inv_exp = get_string("MATH_ERR_INVALID_CHARS", lang)
             return MathSolution(
                 expression=cleaned,
                 result=None,
                 result_str="",
-                explanation=(
-                    f"I found letters or unsupported symbols. "
-                    f"Please enter numbers with plus or minus."
-                ),
-                short_step="Invalid characters",
+                explanation=inv_exp,
+                short_step="Hindi wasto" if lang == "fil" else "Invalid characters",
                 is_valid=False,
-                error_message=f"Unsupported symbols: {', '.join(set(invalid_chars))}"
+                error_message=inv_exp if lang == "fil" else f"Unsupported symbols: {', '.join(set(invalid_chars))}"
             )
 
         # Tokenize numbers and operators
         tokens = re.findall(r'(\d+(?:\.\d+)?|[+\-*/])', cleaned)
         if not tokens:
+            no_tokens_exp = get_string("MATH_ERR_NO_TOKENS", lang)
             return MathSolution(
                 expression=cleaned,
                 result=None,
                 result_str="",
-                explanation="Please enter a math problem, such as 5 plus 3.",
-                short_step="Invalid input",
+                explanation=no_tokens_exp,
+                short_step="Hindi wasto" if lang == "fil" else "Invalid input",
                 is_valid=False,
-                error_message="No valid math tokens found."
+                error_message=no_tokens_exp if lang == "fil" else "No valid math tokens found."
             )
 
         # Case 1: Single number entered (e.g. "5")
@@ -120,11 +124,12 @@ class SafeArithmetic:
                 val = float(tokens[0])
                 num = int(val) if val.is_integer() else val
                 num_str = str(num)
+                single_exp = f"Ang {num_str} ay {num_str}." if lang == "fil" else f"{num_str} equals {num_str}."
                 return MathSolution(
                     expression=cleaned,
                     result=num,
                     result_str=num_str,
-                    explanation=f"{num_str} equals {num_str}.",
+                    explanation=single_exp,
                     short_step=f"= {num_str}",
                     is_valid=True
                 )
@@ -133,51 +138,53 @@ class SafeArithmetic:
 
         # Check if first token is operator
         if tokens[0] in "+-*/":
+            lead_exp = get_string("MATH_ERR_LEADING_OP", lang)
             return MathSolution(
                 expression=cleaned,
                 result=None,
                 result_str="",
-                explanation="Please enter the first number before the operator.",
-                short_step="Leading operator",
+                explanation=lead_exp,
+                short_step="Simula operator" if lang == "fil" else "Leading operator",
                 is_valid=False,
-                error_message="Expression cannot start with an operator."
+                error_message=lead_exp if lang == "fil" else "Expression cannot start with an operator."
             )
 
         # Validate token pattern: should alternate number, op, number, op, number...
-        # E.g. [num, op, num]
         if len(tokens) % 2 == 0:
             last_token = tokens[-1]
             if last_token in "+-*/":
-                op_word = {"+": "plus", "-": "minus", "*": "times", "/": "divided by"}.get(last_token, "operator")
+                inc_exp = get_string("MATH_ERR_INCOMPLETE", lang)
                 return MathSolution(
                     expression=cleaned,
                     result=None,
                     result_str="",
-                    explanation=f"Incomplete math problem. Please enter a second number after the {op_word}.",
-                    short_step="Incomplete",
+                    explanation=inc_exp,
+                    short_step="Kulang" if lang == "fil" else "Incomplete",
                     is_valid=False,
-                    error_message=f"Missing number after {last_token}"
+                    error_message=inc_exp if lang == "fil" else f"Missing number after {last_token}"
                 )
+            mal_exp = get_string("MATH_ERR_MALFORMED", lang)
             return MathSolution(
                 expression=cleaned,
                 result=None,
                 result_str="",
-                explanation="Please enter a math problem like 5 plus 3.",
-                short_step="Malformed",
+                explanation=mal_exp,
+                short_step="Hindi wasto" if lang == "fil" else "Malformed",
                 is_valid=False,
-                error_message="Malformed expression."
+                error_message=mal_exp if lang == "fil" else "Malformed expression."
             )
 
         # If exactly 3 tokens: Binary operation (most common Grade 1 scenario)
         if len(tokens) == 3:
-            return cls._solve_binary(tokens[0], tokens[1], tokens[2], cleaned)
+            return cls._solve_binary(tokens[0], tokens[1], tokens[2], cleaned, language=lang)
 
         # If more than 3 tokens: Chained operations (e.g. 2 + 3 + 4)
-        return cls._solve_chained(tokens, cleaned)
+        return cls._solve_chained(tokens, cleaned, language=lang)
 
     @classmethod
-    def _solve_binary(cls, token_a: str, op: str, token_b: str, original_expr: str) -> MathSolution:
+    def _solve_binary(cls, token_a: str, op: str, token_b: str, original_expr: str, language: str = "en") -> MathSolution:
         """Evaluate a binary expression: A op B."""
+        lang = language.lower() if language else "en"
         try:
             val_a = float(token_a)
             val_b = float(token_b)
@@ -186,8 +193,8 @@ class SafeArithmetic:
                 expression=original_expr,
                 result=None,
                 result_str="",
-                explanation="Could not read the numbers in your problem.",
-                short_step="Error",
+                explanation="Hindi mabasa ang mga numero sa problema." if lang == "fil" else "Could not read the numbers in your problem.",
+                short_step="Mali" if lang == "fil" else "Error",
                 is_valid=False,
                 error_message="Invalid numeric tokens."
             )
@@ -201,7 +208,7 @@ class SafeArithmetic:
         if op == "+":
             ans = a + b
             ans_str = str(ans)
-            explanation, short_step = cls._explain_addition(a, b, ans)
+            explanation, short_step = cls._explain_addition(a, b, ans, language=lang)
             return MathSolution(
                 expression=canonical_expr,
                 result=ans,
@@ -214,22 +221,20 @@ class SafeArithmetic:
         elif op == "-":
             # Grade 1 DepEd check: whole numbers only, no negative answers
             if a < b:
+                neg_exp = get_string("MATH_ERR_NEGATIVE", lang, a=a, b=b)
                 return MathSolution(
                     expression=canonical_expr,
                     result=None,
                     result_str="",
-                    explanation=(
-                        f"In Grade 1 math, we cannot take away {b} from {a} "
-                        f"because {b} is bigger than {a}."
-                    ),
-                    short_step=f"{a} < {b} (Not enough)",
+                    explanation=neg_exp,
+                    short_step=f"{a} < {b} (Kulang)" if lang == "fil" else f"{a} < {b} (Not enough)",
                     is_valid=False,
-                    error_message=f"Cannot subtract {b} from {a} in Grade 1."
+                    error_message=neg_exp if lang == "fil" else f"Cannot subtract {b} from {a} in Grade 1."
                 )
 
             ans = a - b
             ans_str = str(ans)
-            explanation, short_step = cls._explain_subtraction(a, b, ans)
+            explanation, short_step = cls._explain_subtraction(a, b, ans, language=lang)
             return MathSolution(
                 expression=canonical_expr,
                 result=ans,
@@ -242,7 +247,7 @@ class SafeArithmetic:
         elif op == "*":
             ans = a * b
             ans_str = str(ans)
-            explanation, short_step = cls._explain_multiplication(a, b, ans)
+            explanation, short_step = cls._explain_multiplication(a, b, ans, language=lang)
             return MathSolution(
                 expression=canonical_expr,
                 result=ans,
@@ -254,24 +259,32 @@ class SafeArithmetic:
 
         elif op == "/":
             if b == 0:
+                div_zero_exp = get_string("MATH_ERR_DIVIDE_ZERO", lang)
                 return MathSolution(
                     expression=canonical_expr,
                     result=None,
                     result_str="",
-                    explanation="Cannot divide by zero. We cannot split items into zero groups.",
-                    short_step="Divide by zero",
+                    explanation=div_zero_exp,
+                    short_step="Hinati sa sero" if lang == "fil" else "Divide by zero",
                     is_valid=False,
-                    error_message="Division by zero."
+                    error_message=div_zero_exp if lang == "fil" else "Division by zero."
                 )
 
             if isinstance(a, int) and isinstance(b, int) and a % b == 0:
                 ans = a // b
                 ans_str = str(ans)
-                explanation = (
-                    f"{a} divided by {b} equals {ans_str}. "
-                    f"If you share {a} items equally into {b} groups, each group gets {ans_str}."
-                )
-                short_step = f"Share {a} in {b} groups = {ans_str}"
+                if lang == "fil":
+                    explanation = (
+                        f"Ang {a} hatiin sa {b} ay {ans_str}. "
+                        f"Kapag ibinahagi ang {a} sa {b} pantay na pangkat, bawat pangkat ay may {ans_str}. Ang sagot ay {ans_str}."
+                    )
+                    short_step = f"Ibahagi {a} sa {b} pangkat = {ans_str}"
+                else:
+                    explanation = (
+                        f"{a} divided by {b} equals {ans_str}. "
+                        f"If you share {a} items equally into {b} groups, each group gets {ans_str}."
+                    )
+                    short_step = f"Share {a} in {b} groups = {ans_str}"
                 return MathSolution(
                     expression=canonical_expr,
                     result=ans,
@@ -283,14 +296,20 @@ class SafeArithmetic:
             elif isinstance(a, int) and isinstance(b, int):
                 quot = a // b
                 rem = a % b
-                # Grade 1 DepEd Braille: Whole number division with remainder (no decimals/Nemeth)
                 ans = quot
                 ans_str = f"{quot} R{rem}"
-                explanation = (
-                    f"{a} divided by {b} equals {quot} with a remainder of {rem}. "
-                    f"Each group gets {quot}, and there are {rem} left over."
-                )
-                short_step = f"{quot} R{rem}"
+                if lang == "fil":
+                    explanation = (
+                        f"Ang {a} hatiin sa {b} ay {quot} na may natitirang {rem}. "
+                        f"Bawat pangkat ay may {quot}, at may natitirang {rem}."
+                    )
+                    short_step = f"{quot} R{rem}"
+                else:
+                    explanation = (
+                        f"{a} divided by {b} equals {quot} with a remainder of {rem}. "
+                        f"Each group gets {quot}, and there are {rem} left over."
+                    )
+                    short_step = f"{quot} R{rem}"
                 return MathSolution(
                     expression=canonical_expr,
                     result=ans,
@@ -302,7 +321,7 @@ class SafeArithmetic:
             else:
                 ans = round(a / b, 2)
                 ans_str = str(ans)
-                explanation = f"{a} divided by {b} equals {ans_str}."
+                explanation = f"Ang {a} hatiin sa {b} ay {ans_str}. Ang sagot ay {ans_str}." if lang == "fil" else f"{a} divided by {b} equals {ans_str}."
                 short_step = f"= {ans_str}"
                 return MathSolution(
                     expression=canonical_expr,
@@ -317,7 +336,7 @@ class SafeArithmetic:
             expression=original_expr,
             result=None,
             result_str="",
-            explanation=f"Unsupported math operator: {op}",
+            explanation=get_string("MATH_ERR_UNSUPPORTED_OP", lang),
             short_step="Unknown op",
             is_valid=False,
             error_message=f"Operator '{op}' is not supported."
@@ -326,44 +345,46 @@ class SafeArithmetic:
     # ---- Pedagogical Explanation Generators ----
 
     @classmethod
-    def _explain_addition(cls, a: Union[int, float], b: Union[int, float], ans: Union[int, float]) -> Tuple[str, str]:
+    def _explain_addition(cls, a: Union[int, float], b: Union[int, float], ans: Union[int, float], language: str = "en") -> Tuple[str, str]:
         """
         Generate Grade 1 'counting on' explanation for addition.
         """
+        lang = language.lower() if language else "en"
         if not (isinstance(a, int) and isinstance(b, int) and isinstance(ans, int)):
-            return (
-                f"{a} plus {b} equals {ans}.",
-                f"= {ans}"
-            )
+            if lang == "fil":
+                return (f"Ang {a} dagdag {b} ay {ans}. Ang sagot ay {ans}.", f"= {ans}")
+            return (f"{a} plus {b} equals {ans}.", f"= {ans}")
 
         # Zero property
         if a == 0 and b == 0:
-            return (
-                "0 plus 0 equals 0. Zero plus zero is still zero!",
-                "= 0"
-            )
+            if lang == "fil":
+                return ("Ang 0 dagdag 0 ay 0. Ang sagot ay 0.", "= 0")
+            return ("0 plus 0 equals 0. Zero plus zero is still zero!", "= 0")
         if b == 0:
-            return (
-                f"{a} plus 0 equals {ans}. Adding zero leaves {a} unchanged! The answer is {ans}.",
-                f"{a} + 0 = {ans}"
-            )
+            if lang == "fil":
+                return (f"Ang {a} dagdag 0 ay {ans}. Ang pagdagdag ng sero ay hindi nagbabago sa {a}. Ang sagot ay {ans}.", f"{a} + 0 = {ans}")
+            return (f"{a} plus 0 equals {ans}. Adding zero leaves {a} unchanged! The answer is {ans}.", f"{a} + 0 = {ans}")
         if a == 0:
-            return (
-                f"0 plus {b} equals {ans}. Starting at zero and adding {b} gives {ans}.",
-                f"0 + {b} = {ans}"
-            )
+            if lang == "fil":
+                return (f"Ang 0 dagdag {b} ay {ans}. Magsimula sa sero at magdagdag ng {b}: {ans}. Ang sagot ay {ans}.", f"0 + {b} = {ans}")
+            return (f"0 plus {b} equals {ans}. Starting at zero and adding {b} gives {ans}.", f"0 + {b} = {ans}")
 
         # Adding 1
         if b == 1:
-            return (
-                f"{a} plus 1 equals {ans}. Count up 1 more from {a}: {ans}. The answer is {ans}.",
-                f"{a} -> {ans}"
-            )
+            if lang == "fil":
+                return (f"Ang {a} dagdag 1 ay {ans}. Magsimula sa {a}, magbilang ng 1 pa: {ans}. Ang sagot ay {ans}.", f"{a} -> {ans}")
+            return (f"{a} plus 1 equals {ans}. Count up 1 more from {a}: {ans}. The answer is {ans}.", f"{a} -> {ans}")
 
         # Adding small quantities (1 to 10) -> Pure Counting On
         if 1 < b <= 10:
             steps = list(range(a + 1, a + b + 1))
             steps_str = ", ".join(str(s) for s in steps)
+            if lang == "fil":
+                return (
+                    f"Ang {a} dagdag {b} ay {ans}. "
+                    f"Magsimula sa {a}, magbilang ng {b} pa: {steps_str}. Ang sagot ay {ans}.",
+                    f"Simula {a} -> {steps_str}"
+                )
             return (
                 f"{a} plus {b} equals {ans}. Let's count together! "
                 f"Start at {a}, and count up {b} more: {steps_str}. The answer is {ans}.",
@@ -378,8 +399,13 @@ class SafeArithmetic:
             tens_sum = a_tens + b_tens
 
             if ones_sum < 10:
-                # No regrouping (DepEd Grade 1 Q3/Q4 standard)
                 tens_val = tens_sum * 10
+                if lang == "fil":
+                    return (
+                        f"Ang {a} dagdag {b} ay {ans}. Unang pagsamahin ang mga isahan: {a_ones} dagdag {b_ones} ay {ones_sum}. "
+                        f"Pagkatapos ang sampuan: {a_tens} dagdag {b_tens} ay {tens_sum} na sampuan o {tens_val}. Ang sagot ay {ans}.",
+                        f"Isahan: {ones_sum}, Sampuan: {tens_sum}0 -> {ans}"
+                    )
                 return (
                     f"{a} plus {b} equals {ans}. Let's solve by place value! "
                     f"First add the ones: {a_ones} plus {b_ones} is {ones_sum}. "
@@ -388,55 +414,68 @@ class SafeArithmetic:
                     f"Ones: {ones_sum}, Tens: {tens_sum}0 -> {ans}"
                 )
             else:
-                # Regrouping
                 intermediate = a + (b_tens * 10)
+                if lang == "fil":
+                    return (
+                        f"Ang {a} dagdag {b} ay {ans}. Magsimula sa {a}, idagdag ang {b_tens * 10} upang makuha ang {intermediate}, "
+                        f"pagkatapos dagdagan ng {b_ones}. Ang sagot ay {ans}.",
+                        f"{a} + {b_tens*10} = {intermediate} -> {ans}"
+                    )
                 return (
                     f"{a} plus {b} equals {ans}. Start at {a}. "
                     f"Add {b_tens * 10} to get {intermediate}, then add {b_ones} more to get {ans}.",
                     f"{a} + {b_tens*10} = {intermediate} -> {ans}"
                 )
 
+        if lang == "fil":
+            return (
+                f"Ang {a} dagdag {b} ay {ans}. Magsimula sa {a} at magdagdag ng {b}. Ang sagot ay {ans}.",
+                f"{a} + {b} = {ans}"
+            )
         return (
             f"{a} plus {b} equals {ans}. Start at {a} and add {b} to get {ans}.",
             f"{a} + {b} = {ans}"
         )
 
     @classmethod
-    def _explain_subtraction(cls, a: Union[int, float], b: Union[int, float], ans: Union[int, float]) -> Tuple[str, str]:
+    def _explain_subtraction(cls, a: Union[int, float], b: Union[int, float], ans: Union[int, float], language: str = "en") -> Tuple[str, str]:
         """
         Generate Grade 1 'counting back' explanation for subtraction.
         """
+        lang = language.lower() if language else "en"
         if not (isinstance(a, int) and isinstance(b, int) and isinstance(ans, int)):
-            return (
-                f"{a} minus {b} equals {ans}.",
-                f"= {ans}"
-            )
+            if lang == "fil":
+                return (f"Ang {a} bawas {b} ay {ans}. Ang sagot ay {ans}.", f"= {ans}")
+            return (f"{a} minus {b} equals {ans}.", f"= {ans}")
 
         # Subtracting 0
         if b == 0:
-            return (
-                f"{a} minus 0 equals {ans}. Taking away zero leaves {a} unchanged! The answer is {ans}.",
-                f"{a} - 0 = {ans}"
-            )
+            if lang == "fil":
+                return (f"Ang {a} bawas 0 ay {ans}. Ang pagbawas ng sero ay hindi nagbabago sa {a}. Ang sagot ay {ans}.", f"{a} - 0 = {ans}")
+            return (f"{a} minus 0 equals {ans}. Taking away zero leaves {a} unchanged! The answer is {ans}.", f"{a} - 0 = {ans}")
 
         # Subtracting same number
         if a == b:
-            return (
-                f"{a} minus {b} equals 0. Taking away all {b} leaves zero! The answer is 0.",
-                f"{a} - {b} = 0"
-            )
+            if lang == "fil":
+                return (f"Ang {a} bawas {b} ay 0. Kapag binawas lahat ng {b}, sero ang natitira. Ang sagot ay 0.", f"{a} - {b} = 0")
+            return (f"{a} minus {b} equals 0. Taking away all {b} leaves zero! The answer is 0.", f"{a} - {b} = 0")
 
         # Subtracting 1
         if b == 1:
-            return (
-                f"{a} minus 1 equals {ans}. Count back 1 from {a}: {ans}. The answer is {ans}.",
-                f"{a} -> {ans}"
-            )
+            if lang == "fil":
+                return (f"Ang {a} bawas 1 ay {ans}. Magsimula sa {a}, magbilang pabalik ng 1: {ans}. Ang sagot ay {ans}.", f"{a} -> {ans}")
+            return (f"{a} minus 1 equals {ans}. Count back 1 from {a}: {ans}. The answer is {ans}.", f"{a} -> {ans}")
 
         # Subtracting small quantities (1 to 10) -> Pure Counting Back
         if 1 < b <= 10:
             steps = list(range(a - 1, a - b - 1, -1))
             steps_str = ", ".join(str(s) for s in steps)
+            if lang == "fil":
+                return (
+                    f"Ang {a} bawas {b} ay {ans}. "
+                    f"Magsimula sa {a}, magbilang pabalik ng {b}: {steps_str}. Ang sagot ay {ans}.",
+                    f"Simula {a} -> {steps_str}"
+                )
             return (
                 f"{a} minus {b} equals {ans}. Let's count back! "
                 f"Start at {a}, and count back {b}: {steps_str}. The answer is {ans}.",
@@ -449,10 +488,15 @@ class SafeArithmetic:
             b_tens, b_ones = divmod(b, 10)
 
             if a_ones >= b_ones:
-                # No regrouping (DepEd Grade 1 Q3/Q4 standard)
                 ones_diff = a_ones - b_ones
                 tens_diff = a_tens - b_tens
                 tens_word = "ten" if tens_diff == 1 else "tens"
+                if lang == "fil":
+                    return (
+                        f"Ang {a} bawas {b} ay {ans}. Unang bawasan ang mga isahan: {a_ones} bawas {b_ones} ay {ones_diff}. "
+                        f"Pagkatapos ang sampuan: {a_tens} bawas {b_tens} ay {tens_diff}. Ang sagot ay {ans}.",
+                        f"Isahan: {ones_diff}, Sampuan: {tens_diff}0 -> {ans}"
+                    )
                 return (
                     f"{a} minus {b} equals {ans}. First subtract the ones: "
                     f"{a_ones} minus {b_ones} is {ones_diff}. "
@@ -462,34 +506,57 @@ class SafeArithmetic:
                 )
             else:
                 intermediate = a - (b_tens * 10)
+                if lang == "fil":
+                    return (
+                        f"Ang {a} bawas {b} ay {ans}. Magsimula sa {a}, bawasan ng {b_tens * 10} upang makuha ang {intermediate}, "
+                        f"pagkatapos bawasan ng {b_ones}. Ang sagot ay {ans}.",
+                        f"{a} - {b_tens*10} = {intermediate} -> {ans}"
+                    )
                 return (
                     f"{a} minus {b} equals {ans}. Start at {a}. "
                     f"Subtract {b_tens * 10} to get {intermediate}, then take away {b_ones} more to get {ans}.",
                     f"{a} - {b_tens*10} = {intermediate} -> {ans}"
                 )
 
+        if lang == "fil":
+            return (
+                f"Ang {a} bawas {b} ay {ans}. Ang sagot ay {ans}.",
+                f"{a} - {b} = {ans}"
+            )
         return (
             f"{a} minus {b} equals {ans}. Start at {a} and take away {b} to get {ans}.",
             f"{a} - {b} = {ans}"
         )
 
     @classmethod
-    def _explain_multiplication(cls, a: Union[int, float], b: Union[int, float], ans: Union[int, float]) -> Tuple[str, str]:
-        """
-        Generate Grade 1 'repeated addition / groups of' explanation for multiplication.
-        """
+    def _explain_multiplication(cls, a: Union[int, float], b: Union[int, float], ans: Union[int, float], language: str = "en") -> Tuple[str, str]:
+        lang = language.lower() if language else "en"
         if not (isinstance(a, int) and isinstance(b, int) and isinstance(ans, int)):
-            return (
-                f"{a} times {b} equals {ans}.",
-                f"= {ans}"
-            )
+            if lang == "fil":
+                return (f"Ang {a} beses {b} ay {ans}. Ang sagot ay {ans}.", f"= {ans}")
+            return (f"{a} times {b} equals {ans}.", f"= {ans}")
 
+        if lang == "fil":
+            if a == 0 or b == 0:
+                return (f"Ang {a} beses {b} ay 0. Ang anumang bilang na paramihin sa sero ay laging sero.", f"{a} * {b} = 0")
+            if a == 1:
+                return (f"Ang 1 beses {b} ay {ans}. Isang pangkat ng {b} ay {ans}. Ang sagot ay {ans}.", f"1 * {b} = {ans}")
+            if a <= 5:
+                groups_str = " dagdag ".join([str(b)] * a)
+                return (
+                    f"Ang {a} beses {b} ay {ans}. Iyan ay {a} pangkat ng {b}: {groups_str} ay {ans}. Ang sagot ay {ans}.",
+                    f"{a} pangkat ng {b} = {ans}"
+                )
+            return (f"Ang {a} beses {b} ay {ans}. Iyan ay {a} pangkat ng {b}. Ang sagot ay {ans}.", f"{a} pangkat ng {b} = {ans}")
+
+        # Zero property
         if a == 0 or b == 0:
             return (
                 f"{a} times {b} equals 0. Any number multiplied by zero is zero.",
                 f"{a} * {b} = 0"
             )
 
+        # Identity property
         if b == 1:
             return (
                 f"{a} times 1 equals {ans}. 1 group of {a} is {ans}.",
@@ -515,24 +582,25 @@ class SafeArithmetic:
             f"{a} times {b} equals {ans}. That is {a} groups of {b}, which makes {ans}.",
             f"{a} groups of {b} = {ans}"
         )
-
     @classmethod
-    def _solve_chained(cls, tokens: List[str], original_expr: str) -> MathSolution:
+    def _solve_chained(cls, tokens: List[str], original_expr: str, language: str = "en") -> MathSolution:
         """
         Evaluate chained expressions with correct operator precedence (* and / before + and -).
         """
+        lang = language.lower() if language else "en"
         try:
             # Check for division by zero upfront
             for idx in range(1, len(tokens), 2):
                 if tokens[idx] == "/" and float(tokens[idx + 1]) == 0:
+                    div_zero = get_string("MATH_ERR_DIVIDE_ZERO", lang)
                     return MathSolution(
                         expression=original_expr,
                         result=None,
                         result_str="",
-                        explanation="Cannot divide by zero.",
-                        short_step="Divide by zero",
+                        explanation=div_zero,
+                        short_step="Hinati sa sero" if lang == "fil" else "Divide by zero",
                         is_valid=False,
-                        error_message="Division by zero."
+                        error_message=div_zero if lang == "fil" else "Division by zero."
                     )
 
             # Check if there are high-precedence operators (* or /) alongside low-precedence (+ or -)
@@ -556,11 +624,11 @@ class SafeArithmetic:
                         if op == "*":
                             res = a_val * b_val
                             r_str = str(int(res) if res.is_integer() else round(res, 2))
-                            steps_desc.append(f"multiply {a_str} and {b_str} to get {r_str}")
+                            steps_desc.append(f"ang {a_str} beses {b_str} ay {r_str}" if lang == "fil" else f"multiply {a_str} and {b_str} to get {r_str}")
                         else:
                             res = a_val / b_val
                             r_str = str(int(res) if res.is_integer() else round(res, 2))
-                            steps_desc.append(f"divide {a_str} by {b_str} to get {r_str}")
+                            steps_desc.append(f"ang {a_str} hatiin sa {b_str} ay {r_str}" if lang == "fil" else f"divide {a_str} by {b_str} to get {r_str}")
 
                         cur_tokens[idx - 1:idx + 2] = [r_str]
                     else:
@@ -576,22 +644,23 @@ class SafeArithmetic:
                     b_str = str(int(b_val) if b_val.is_integer() else b_val)
                     if op == "-":
                         if a_val < b_val:
+                            neg_msg = get_string("MATH_ERR_NEGATIVE", lang, a=a_str, b=b_str)
                             return MathSolution(
                                 expression=original_expr,
                                 result=None,
                                 result_str="",
-                                explanation=f"In Grade 1 math, we cannot take away {b_str} from {a_str}.",
-                                short_step="Underflow",
+                                explanation=neg_msg,
+                                short_step="Kulang" if lang == "fil" else "Underflow",
                                 is_valid=False,
                                 error_message="Negative result encountered in chained subtraction."
                             )
                         res = a_val - b_val
                         r_str = str(int(res) if res.is_integer() else round(res, 2))
-                        steps_desc.append(f"subtract {b_str} from {a_str} to get {r_str}")
+                        steps_desc.append(f"ang {a_str} bawas {b_str} ay {r_str}" if lang == "fil" else f"subtract {b_str} from {a_str} to get {r_str}")
                     else:
                         res = a_val + b_val
                         r_str = str(int(res) if res.is_integer() else round(res, 2))
-                        steps_desc.append(f"add {a_str} and {b_str} to get {r_str}")
+                        steps_desc.append(f"ang {a_str} dagdag {b_str} ay {r_str}" if lang == "fil" else f"add {a_str} and {b_str} to get {r_str}")
 
                     cur_tokens[idx - 1:idx + 2] = [r_str]
 
@@ -599,11 +668,15 @@ class SafeArithmetic:
                 ans = int(final_val) if final_val.is_integer() else round(final_val, 2)
                 ans_str = str(ans)
 
-                if len(steps_desc) == 1:
-                    explanation = f"{' '.join(tokens)} equals {ans_str}. {steps_desc[0].capitalize()}. The answer is {ans_str}."
+                if lang == "fil":
+                    joined_steps = ", pagkatapos ".join(steps_desc)
+                    explanation = f"Ang {' '.join(tokens)} ay {ans_str}. Una, {joined_steps}. Ang sagot ay {ans_str}."
                 else:
-                    first_steps = ", then ".join(steps_desc)
-                    explanation = f"{' '.join(tokens)} equals {ans_str}. First {first_steps}. The final answer is {ans_str}."
+                    if len(steps_desc) == 1:
+                        explanation = f"{' '.join(tokens)} equals {ans_str}. {steps_desc[0].capitalize()}. The answer is {ans_str}."
+                    else:
+                        first_steps = ", then ".join(steps_desc)
+                        explanation = f"{' '.join(tokens)} equals {ans_str}. First {first_steps}. The final answer is {ans_str}."
 
                 short_step = f"= {ans_str}"
                 return MathSolution(
@@ -626,18 +699,23 @@ class SafeArithmetic:
                     next_val = float(tokens[i + 1])
                     prev_val = current_val
 
-                    op_word = {"+": "plus", "-": "minus", "*": "times", "/": "divided by"}.get(op, op)
+                    if lang == "fil":
+                        op_word = {"+": "dagdag", "-": "bawas", "*": "beses", "/": "hatiin sa"}.get(op, op)
+                    else:
+                        op_word = {"+": "plus", "-": "minus", "*": "times", "/": "divided by"}.get(op, op)
 
                     if op == "+":
                         current_val += next_val
                     elif op == "-":
                         if prev_val < next_val:
+                            a_disp = int(prev_val) if prev_val.is_integer() else prev_val
+                            b_disp = int(next_val) if next_val.is_integer() else next_val
                             return MathSolution(
                                 expression=original_expr,
                                 result=None,
                                 result_str="",
-                                explanation=f"In Grade 1 math, we cannot take away {int(next_val)} from {int(prev_val)}.",
-                                short_step="Underflow",
+                                explanation=get_string("MATH_ERR_NEGATIVE", lang, a=a_disp, b=b_disp),
+                                short_step="Kulang" if lang == "fil" else "Underflow",
                                 is_valid=False,
                                 error_message="Negative result encountered in chained subtraction."
                             )
@@ -651,7 +729,7 @@ class SafeArithmetic:
                             expression=original_expr,
                             result=None,
                             result_str="",
-                            explanation=f"Unsupported operator: {op}",
+                            explanation=get_string("MATH_ERR_UNSUPPORTED_OP", lang),
                             short_step="Error",
                             is_valid=False,
                             error_message=f"Operator '{op}' is unsupported."
@@ -660,16 +738,19 @@ class SafeArithmetic:
                     p_str = str(int(prev_val) if prev_val.is_integer() else prev_val)
                     n_str = str(int(next_val) if next_val.is_integer() else next_val)
                     c_str = str(int(current_val) if current_val.is_integer() else current_val)
-                    steps_desc.append(f"{p_str} {op_word} {n_str} is {c_str}")
+                    steps_desc.append(f"Ang {p_str} {op_word} {n_str} ay {c_str}" if lang == "fil" else f"{p_str} {op_word} {n_str} is {c_str}")
                     i += 2
 
                 ans = int(current_val) if current_val.is_integer() else round(current_val, 2)
                 ans_str = str(ans)
-                explanation = (
-                    f"{' '.join(tokens)} equals {ans_str}. "
-                    + ". ".join(steps_desc)
-                    + f". The final answer is {ans_str}."
-                )
+                if lang == "fil":
+                    explanation = f"Ang {' '.join(tokens)} ay {ans_str}. " + ". ".join(steps_desc) + f". Ang sagot ay {ans_str}."
+                else:
+                    explanation = (
+                        f"{' '.join(tokens)} equals {ans_str}. "
+                        + ". ".join(steps_desc)
+                        + f". The final answer is {ans_str}."
+                    )
                 short_step = " -> ".join([tokens[0]] + [str(int(current_val) if current_val.is_integer() else current_val)])
 
                 return MathSolution(
@@ -687,7 +768,7 @@ class SafeArithmetic:
                 expression=original_expr,
                 result=None,
                 result_str="",
-                explanation="Could not calculate this problem.",
+                explanation=get_string("MATH_ERR_CALC", lang),
                 short_step="Error",
                 is_valid=False,
                 error_message=str(exc)

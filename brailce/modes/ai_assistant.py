@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 FILIPINO_AI_OFFLINE_RESPONSES = {
     "kumusta": "Mabuti naman ako! Masaya akong makasama ka sa pag-aaral ng Braille.",
     "kumusta ka": "Mabuti naman ako! Masaya akong makasama ka sa pag-aaral ng Braille.",
-    "ano ang pangalan mo": "Ako si Brailce, ang iyong matalinong voice assistant para sa Braille.",
-    "sino ka": "Ako si Brailce, ang iyong matalinong voice assistant para sa Braille.",
+    "ano ang pangalan mo": "Ako si Brailce, ang iyong matalinong katulong sa pag-aaral ng Braille.",
+    "sino ka": "Ako si Brailce, ang iyong matalinong katulong sa pag-aaral ng Braille.",
     "magandang umaga": "Magandang umaga sa iyo! Handa ka na bang mag-aral?",
     "magandang hapon": "Magandang hapon sa iyo!",
     "magandang gabi": "Magandang gabi sa iyo!",
@@ -36,11 +36,20 @@ FILIPINO_AI_OFFLINE_RESPONSES = {
     "tulong": "Narito ako upang tulungan ka sa pagbasa at pagsulat ng Braille.",
     "ano ang braille": "Ang Braille ay isang sistema ng pagbasa at pagsulat gamit ang mga nakataas na tuldok para sa mga bulag.",
     "sino ang gumawa ng braille": "Si Louis Braille ang lumikha ng sistemang Braille noong taong 1824.",
-    "sino nag imbento ng braille": "Si Louis Braille ang nag-imbento ng sistemang Braille noong 1824 sa France.",
+    "sino nag imbento ng braille": "Si Louis Braille ang nag-imbento ng sistemang Braille noong 1824 sa Pransya.",
     "sino si louis braille": "Si Louis Braille ay isang Pranses na tagapagturo na lumikha ng sistemang Braille para sa mga bulag.",
     "kailan naimbento ang braille": "Naimbento ang sistemang Braille noong taong 1824.",
     "ano ang grade 1 braille": "Ang Grade 1 Braille ay titik-sa-titik na pagsasalin kung saan bawat karakter ay may katumbas na titik nang walang pagpapaikli.",
     "ilang tuldok mayroon sa isang braille cell": "Mayroong anim na nakataas na tuldok ang isang karaniwang Braille cell sa dalawang hanay.",
+    "ano ang buwan": "Ang Buwan ay ang likas na satelayt na umiikot sa planetang Daigdig.",
+    "ano ang araw": "Ang Araw ay ang bituin sa gitna ng ating sistemang solar na nagbibigay ng liwanag at init.",
+    "ano ang pambansang ibon ng pilipinas": "Ang Agila ng Pilipinas ang ating pambansang ibon.",
+    "ano ang pambansang bayani ng pilipinas": "Si Doktor Jose Rizal ang ating pambansang bayani.",
+    "ano ang pambansang bulaklak ng pilipinas": "Ang Sampaguita ang pambansang bulaklak ng Pilipinas.",
+    "ano ang kabisera ng pilipinas": "Ang Maynila ang kabisera ng Pilipinas.",
+    "ilan ang titik sa alpabetong filipino": "Mayroong 28 titik sa modernong alpabetong Filipino.",
+    "ano ang brailce": "Ang Brailce ay isang kagamitan at katulong sa pag-aaral ng Braille.",
+    "paano magbasa ng braille": "Binabasa ang Braille gamit ang mga dulo ng daliri sa pamamagitan ng pagdama sa mga nakataas na tuldok.",
 }
 
 
@@ -139,46 +148,22 @@ class AIAssistantMode(BaseMode):
         if self.app.speech:
             if character == " ":
                 if last_word:
-                    clean_word = last_word.strip()
-                    clean_char = clean_word.rstrip(".")
-                    if self.state.language == "fil":
-                        if len(clean_char) == 1:
-                            if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                                self.app.speech.speak_character(clean_char)
-                            else:
-                                self.app.speech.speak(clean_char)
-                        else:
-                            self.filipino_engine.speak_word(clean_word)
-                    else:
-                        if len(clean_char) == 1:
-                            if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                                self.app.speech.speak_character(clean_char)
-                            else:
-                                self.app.speech.speak(clean_char)
-                        elif hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                            self.app.speech.speak_text(f"{last_word.lower()}.", interrupt=False)
-                        else:
-                            self.app.speech.speak(last_word)
+                    self.app.speech.speak_word_clean(last_word)
             elif speech_override:
-                if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                    self.app.speech.speak_character(speech_override)
-                else:
-                    self.app.speech.speak(speech_override)
+                self.app.speech.speak_character(speech_override)
             elif self.app.config.get("speech", "speak_each_character", default=True):
                 mapping = self.app.encoder.encode(character) if self.app.encoder else None
                 char_val = mapping.character if mapping else character
-                if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                    self.app.speech.speak_character(char_val)
-                else:
-                    self.app.speech.speak(char_val)
+                self.app.speech.speak_character(char_val)
 
     def _handle_backspace(self) -> None:
         """Handle backspace silently without clicks, beeps, or vocal announcements."""
         if not self.state.ai_query_buffer:
             if self.app.display:
-                self.app.display.show_status("Buffer empty")
+                from brailce.i18n.strings import get_string
+                self.app.display.show_status(get_string("BUFFER_EMPTY", self.state.language))
             return
-        
+
         self.state.ai_query_buffer = self.state.ai_query_buffer[:-1]
         if self.app.display:
             self.app.display.show_character("Backspace")
@@ -191,7 +176,8 @@ class AIAssistantMode(BaseMode):
             self.app.display.show_character("Cleared")
             self.app.display.show_text_buffer("")
         if self.app.speech and self.app.config.get("speech", "speak_control_events", default=False):
-            self.app.speech.speak("cleared")
+            from brailce.i18n.strings import get_string
+            self.app.speech.speak_text(get_string("CLEARED", self.state.language), interrupt=True)
 
     def _handle_enter(self) -> None:
         """Submit the accumulated query to Ollama and speak response."""
@@ -202,7 +188,7 @@ class AIAssistantMode(BaseMode):
             if self.app.display:
                 self.app.display.show_error(msg)
             if self.app.speech:
-                self.app.speech.speak(msg)
+                self.app.speech.speak_text(msg, interrupt=False)
             # Restore query buffer if invalid (so user can edit it)
             self.state.ai_query_buffer = query
             return
@@ -211,36 +197,22 @@ class AIAssistantMode(BaseMode):
         if self.app.display:
             self.app.display.show_ai_processing(query)
 
-        if self.state.language == "fil":
-            clean_char = query.rstrip(".")
-            if len(clean_char) == 1:
-                if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                    self.app.speech.speak_character(clean_char)
-                elif self.app.speech:
-                    self.app.speech.speak(clean_char)
-            else:
-                self.filipino_engine.speak_sentence(query)
-        elif self.app.speech:
-            if hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                self.app.speech.speak_text(query, interrupt=False)
-            else:
-                self.app.speech.speak(query, interrupt=False)
+        if self.app.speech:
+            self.app.speech.speak_sentence(query, interrupt=False)
 
         # Start background thread for Ollama inference
         threading.Thread(target=self._process_query, args=(query,), daemon=True).start()
 
     def _process_query(self, query: str) -> None:
-        if self.state.language == "fil":
-            self.filipino_engine.play_thinking()
-        elif self.app.speech:
-            if hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                self.app.speech.speak_text("Thinking, please wait.", interrupt=False)
-            else:
-                self.app.speech.speak("Thinking, please wait.", interrupt=False)
+        from brailce.i18n.strings import get_string
+        lang = self.state.language
+
+        if self.app.speech:
+            self.app.speech.speak_text(get_string("AI_THINKING", lang), interrupt=False)
 
         # Check for pre-cached offline Filipino AI responses
-        if self.state.language == "fil":
-            clean_q = re.sub(r"[^a-zA-Z\s]", "", query).strip().lower()
+        if lang == "fil":
+            clean_q = re.sub(r"[^a-zA-Z0-9\s]", "", query.replace("-", " ")).strip().lower()
             clean_q = " ".join(clean_q.split())
             if clean_q in FILIPINO_AI_OFFLINE_RESPONSES:
                 resp = FILIPINO_AI_OFFLINE_RESPONSES[clean_q]
@@ -249,29 +221,25 @@ class AIAssistantMode(BaseMode):
                 return
 
         if not hasattr(self.app, "ai_client") or not self.app.ai_client:
-            msg = "Hindi magamit ang AI assistant ngayon." if self.state.language == "fil" else "AI assistant is currently unavailable."
-            self._finish_processing(msg, query=query)
+            self._finish_processing(get_string("AI_UNAVAILABLE", lang), query=query)
             return
 
-        response = self.app.ai_client.generate(query, language=self.state.language)
+        response = self.app.ai_client.generate(query, language=lang)
         if not response:
-            msg = "Hindi magamit ang AI assistant ngayon." if self.state.language == "fil" else "AI assistant is currently unavailable."
-            self._finish_processing(msg, query=query)
+            self._finish_processing(get_string("AI_UNAVAILABLE", lang), query=query)
         else:
             self._finish_processing(response, query=query)
 
     def _finish_processing(self, response: str, query: str = "") -> None:
         self.state.ai_processing = False
-        self.state.ai_last_response = response
+        from brailce.ai.ollama_client import clean_ai_response
+        cleaned = clean_ai_response(response) if response else response
+        final_resp = cleaned if cleaned else response
+        self.state.ai_last_response = final_resp
         if self.app.display:
-            self.app.display.show_ai_response(response)
-        if self.state.language == "fil":
-            self.filipino_engine.speak_filipino(response)
-        elif self.app.speech:
-            if hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                self.app.speech.speak_text(response, interrupt=False)
-            else:
-                self.app.speech.speak(response)
+            self.app.display.show_ai_response(final_resp)
+        if self.app.speech:
+            self.app.speech.speak_text(final_resp, interrupt=False)
 
     def on_enter(self) -> None:
         logger.info("Entered AI Assistant Mode.")

@@ -2,14 +2,16 @@
 Brailce – 100% Offline Grade 1 Filipino Playback Engine
 =======================================================
 
-Provides pure offline vocal feedback for Grade 1 Filipino (FIL):
-1. Pre-cached Studio Audio Bank (brailce/audio/filipino/word_<word>.wav)
-   generated via edge-tts (fil-PH-AngeloNeural).
-2. Concatenative Sentence Synthesis: Stitches cached words with 60ms pauses
-   into a seamless single aplay call.
-3. Offline Phonetic Rule Engine: Converts untracked words into phonetic
-   syllables for Piper Neural TTS offline fallback.
-4. Language announcements: switched_fil.wav and switched_en.wav.
+Provides pure offline vocal feedback for Grade 1 Filipino (FIL) using ONE
+consistent Filipino voice (sherpa-onnx MMS-TTS tgl VITS model):
+1. Pre-rendered Studio Audio Bank (brailce/audio/filipino/word_<word>.wav,
+   mode_*.wav, switched_*.wav, thinking_fil.wav, char_*.wav) generated from
+   sherpa-onnx MMS-TTS tgl VITS and loudness/format-standardized to 22050 Hz mono s16.
+2. Live offline synthesis via sherpa-onnx MMS-TTS tgl VITS (brailce/models/filipino/model.onnx)
+   for any unseen Filipino sentence, math explanation, or AI response, cached to disk
+   and played strictly through AudioDeviceCoordinator.play_wav_file().
+3. Pure offline cached-word concatenation fallback if sherpa_onnx binary/model is missing
+   (never falls back to online edge-tts or English Ryan phonetic respelling).
 """
 
 from __future__ import annotations
@@ -17,12 +19,21 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import queue
 import re
 import tempfile
+import threading
 import wave
 from typing import Optional, List, Tuple, Any
 
 from brailce.speech.audio_device import AudioDeviceCoordinator
+from brailce.speech.audio_normalize import (
+    DEFAULT_POST_SILENCE_MS,
+    DEFAULT_PRE_SILENCE_MS,
+    TARGET_SAMPLE_RATE,
+    resample_mono_pcm,
+    standardize_wav_file,
+)
 from brailce.speech.base import SpeechEngine
 
 logger = logging.getLogger(__name__)
@@ -35,9 +46,9 @@ def _find_filipino_audio_dir() -> str:
     )
     if os.path.isdir(local_dir):
         return local_dir
-    pi_dir = "/home/raspberrypi5/brailce/brailce/audio/filipino"
-    if os.path.isdir(pi_dir):
-        return pi_dir
+    home_dir = os.path.expanduser(os.path.join("~", "brailce", "brailce", "audio", "filipino"))
+    if os.path.isdir(home_dir):
+        return home_dir
     return local_dir
 
 
@@ -48,7 +59,8 @@ def _find_filipino_sherpa_model_dir() -> Optional[str]:
     """Locate the sherpa-onnx Filipino model directory."""
     candidates = [
         os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models", "filipino")),
-        "/home/raspberrypi5/brailce/brailce/models/filipino",
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models", "filipino")),
+        os.path.expanduser(os.path.join("~", "brailce", "brailce", "models", "filipino")),
     ]
     for d in candidates:
         model_path = os.path.join(d, "model.onnx")
@@ -136,14 +148,29 @@ def get_filipino_mode_path(mode: Any) -> Optional[str]:
 
 
 def get_filipino_word_path(word: str) -> Optional[str]:
-    """Return path to cached word WAV if it exists on disk."""
-    clean = re.sub(r"[^a-zA-Z]", "", word).lower()
-    if not clean:
+    """
+    Return path to cached Filipino word WAV if it exists on disk.
+    Preserves internal hyphens (e.g. 'labing-isa', 'nag-iisip') and handles digits.
+    """
+    raw = word.strip().lower().rstrip(".,!?:;")
+    if not raw:
         return None
     cache_dir = _find_filipino_audio_dir()
-    wav_path = os.path.join(cache_dir, f"word_{clean}.wav")
-    if os.path.isfile(wav_path):
-        return wav_path
+    # 1. Exact hyphen-preserving slug (e.g. 'labing-isa')
+    slug_hyphen = re.sub(r"[^a-z0-9\-]", "", raw.replace("'", ""))
+    # 2. Compact alphanumeric slug (e.g. 'dalawamput', 'labingisa')
+    slug_plain = re.sub(r"[^a-z0-9]", "", raw)
+
+    candidates = []
+    if slug_hyphen:
+        candidates.append(f"word_{slug_hyphen}.wav")
+    if slug_plain and slug_plain != slug_hyphen:
+        candidates.append(f"word_{slug_plain}.wav")
+
+    for fname in candidates:
+        wav_path = os.path.join(cache_dir, fname)
+        if os.path.isfile(wav_path) and os.path.getsize(wav_path) > 44:
+            return wav_path
     return None
 
 
@@ -196,6 +223,11 @@ def filipino_to_phonetic(text: str) -> str:
         # Keep "braille" intact as "braille" (no Tagalog phonetic mangling)
         if word == "braille":
             converted_tokens.append("braille")
+            continue
+
+        # Keep numbers/digits intact as numbers
+        if word.isdigit():
+            converted_tokens.append(word)
             continue
 
         # Common Tagalog grammatical markers
@@ -371,10 +403,78 @@ class FilipinoEngine:
     4. Fallback to concatenative / phonetic Piper synthesis if model.onnx is missing.
     """
 
-    def __init__(self, fallback_speech: Optional[SpeechEngine] = None) -> None:
+    def __init__(self, fallback_speech: Optional[SpeechEngine] = None, max_queue_size: int = 50) -> None:
         self.fallback_speech = fallback_speech
         self._sherpa_tts = None
         self._sherpa_initialized = False
+        self._queue: queue.Queue[Optional[Tuple[str, Any]]] = queue.Queue(maxsize=max_queue_size)
+        self._worker: Optional[threading.Thread] = None
+        self._running = False
+        self._queue_lock = threading.Lock()
+
+    def _ensure_worker(self) -> None:
+        with self._queue_lock:
+            if self._worker is None or not self._worker.is_alive():
+                self._running = True
+                self._worker = threading.Thread(
+                    target=self._worker_loop,
+                    daemon=True,
+                    name="filipino-speech-worker",
+                )
+                self._worker.start()
+
+    def _worker_loop(self) -> None:
+        while self._running:
+            try:
+                item = self._queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            if item is None:
+                break
+            kind, payload = item
+            try:
+                if kind == "wav":
+                    AudioDeviceCoordinator.play_wav_file(payload, owner="filipino", timeout=30.0)
+                elif kind == "char":
+                    ch, use_fil = payload
+                    self.speak_character(ch, use_filipino_voice=use_fil)
+                elif kind == "text":
+                    self.speak_filipino(payload)
+            except Exception as exc:
+                logger.debug("Filipino worker error: %s", exc)
+
+    def stop(self) -> None:
+        """Clear pending Filipino utterances and interrupt active playback."""
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+        AudioDeviceCoordinator.interrupt_active("filipino")
+
+    def _enqueue(self, kind: str, payload: Any, interrupt: bool = False) -> None:
+        self._ensure_worker()
+        if interrupt:
+            self.stop()
+        try:
+            self._queue.put_nowait((kind, payload))
+        except queue.Full:
+            logger.warning("Filipino speech queue full — dropping item")
+
+    def enqueue_text(self, text: str, interrupt: bool = False) -> None:
+        """Non-blocking queued Filipino speech synthesis/playback."""
+        if text and text.strip():
+            self._enqueue("text", text, interrupt=interrupt)
+
+    def enqueue_wav(self, wav_path: str, interrupt: bool = False) -> None:
+        """Non-blocking queued playback of a pre-rendered WAV on the single Filipino worker."""
+        if wav_path and os.path.isfile(wav_path):
+            self._enqueue("wav", wav_path, interrupt=interrupt)
+
+    def enqueue_character(self, character: str, use_filipino_voice: bool = True) -> None:
+        """Non-blocking queued character feedback."""
+        if character:
+            self._enqueue("char", (character, use_filipino_voice), interrupt=False)
 
     def play_announcement(self, lang: str) -> bool:
         """Play 'Wikang Filipino' or 'English language' announcement."""
@@ -384,25 +484,22 @@ class FilipinoEngine:
         return False
 
     def play_thinking(self) -> bool:
-        """Play 'Nag-iisip, mangyaring maghintay' thinking clip."""
+        """Play 'Nag-iisip, mangyaring maghintay' thinking clip in the same Filipino voice."""
         thinking_path = get_thinking_audio_path()
         if thinking_path and os.path.isfile(thinking_path):
             return AudioDeviceCoordinator.play_wav_file(thinking_path, owner="filipino_thinking", timeout=6.0)
-        if self.fallback_speech:
-            self.fallback_speech.speak("Nag-iisip, mangyaring maghintay.", interrupt=False)
-            return True
-        return False
+        return self.speak_filipino("Nag-iisip, mangyaring maghintay.")
 
     def speak_filipino(self, text: str) -> bool:
         """
-        Speak Filipino text:
-        1. If single word in brailce/audio/filipino/word_*.wav, play immediately.
-        2. If multi-word sentence or uncached word/response:
-           - First try synthesizing with edge-tts (fil-PH-AngeloNeural, timeout 3.0s ->
-             ffmpeg 22050Hz mono s16 WAV -> cache by hash in sentence_<md5>.wav -> aplay -q).
-           - If offline and not yet cached: for each word, if word_<w>.wav exists, load its
-             PCM frames; for uncached words, synthesize pure Filipino phonetic syllables to WAV,
-             concatenate segments smoothly with a 50ms gap, and play via aplay -q!
+        Speak Filipino text using ONE consistent offline Filipino voice
+        (sherpa-onnx MMS-TTS tgl VITS + pre-rendered word bank):
+        1. Single cached word -> play brailce/audio/filipino/word_<word>.wav directly.
+        2. Multi-word or unseen text -> check hash cache sentence_<md5>.wav.
+        3. Synthesize offline via sherpa-onnx MMS-TTS tgl VITS, normalize & cache to
+           sentence_<md5>.wav, and play strictly through AudioDeviceCoordinator.
+        4. If sherpa model is unavailable, concatenate cached Filipino word WAVs
+           (never falling back to online edge-tts or English Ryan phonetic respelling).
         """
         if not text:
             return False
@@ -411,52 +508,39 @@ class FilipinoEngine:
         if not trimmed:
             return False
 
+        # 1. Single-word cache lookup (preserves hyphens like 'labing-isa')
         words = trimmed.split()
         if len(words) == 1:
-            clean_word = re.sub(r"[^a-zA-Z]", "", words[0]).lower()
-            wav_path = get_filipino_word_path(clean_word)
+            wav_path = get_filipino_word_path(words[0])
             if wav_path and os.path.isfile(wav_path):
-                logger.info("FilipinoEngine: Playing cached word '%s' (%s)", clean_word, wav_path)
+                logger.info("FilipinoEngine: Playing cached word '%s' (%s)", words[0], wav_path)
                 return AudioDeviceCoordinator.play_wav_file(wav_path, owner="filipino", timeout=10.0)
 
-        # Check hash cache for multi-word or uncached sentences/responses
-        h = hashlib.md5(trimmed.lower().encode("utf-8")).hexdigest()
+        # 2. Hash cache for full sentences / math explanations / AI replies
+        norm_key = normalize_for_sherpa_filipino(trimmed) or trimmed.lower()
+        h = hashlib.md5(norm_key.encode("utf-8")).hexdigest()
         cache_dir = _find_filipino_audio_dir()
+        os.makedirs(cache_dir, exist_ok=True)
         cached_sentence = os.path.join(cache_dir, f"sentence_{h}.wav")
         if os.path.isfile(cached_sentence) and os.path.getsize(cached_sentence) > 1000:
             logger.info("FilipinoEngine: Playing hash-cached sentence (%s)", cached_sentence)
             return AudioDeviceCoordinator.play_wav_file(cached_sentence, owner="filipino", timeout=30.0)
 
-        # Try edge-tts synthesis online
-        if self._try_edge_tts_synthesis(trimmed, cached_sentence, timeout=3.5):
+        # 3. Live offline synthesis via sherpa-onnx MMS-TTS tgl VITS
+        if self.synthesize_to_wav(trimmed, cached_sentence):
             if os.path.isfile(cached_sentence) and os.path.getsize(cached_sentence) > 1000:
-                logger.info("FilipinoEngine: Playing synthesized edge-tts sentence (%s)", cached_sentence)
                 return AudioDeviceCoordinator.play_wav_file(cached_sentence, owner="filipino", timeout=30.0)
 
-        # When Edge-TTS is unavailable/offline, first check if sherpa model.onnx exists on disk
-        model_dir = _find_filipino_sherpa_model_dir()
-        sherpa_model_path = os.path.join(model_dir, "model.onnx") if model_dir else None
-        if sherpa_model_path and os.path.isfile(sherpa_model_path):
-            logger.info("FilipinoEngine: Edge-TTS offline; synthesizing with sherpa_onnx (model.onnx)")
-            if self._synthesize_sherpa_filipino(trimmed, cached_sentence):
-                if os.path.isfile(cached_sentence) and os.path.getsize(cached_sentence) > 1000:
-                    return AudioDeviceCoordinator.play_wav_file(cached_sentence, owner="filipino", timeout=30.0)
-
-        # Keep existing phonetic Piper fallback only if brailce/models/filipino/model.onnx is not found on disk
-        logger.info("FilipinoEngine: sherpa model not available on disk; falling back to phonetic Piper synthesis")
-        if self._play_offline_concatenated(words):
+        # 4. Offline word-bank concatenation (expand digits/ops first)
+        expanded_words = normalize_for_sherpa_filipino(trimmed).split()
+        if expanded_words and self._play_offline_concatenated(expanded_words):
             return True
 
-        # Last resort: direct phonetic speech through fallback engine
-        if self.fallback_speech:
-            phonetic_sentence = filipino_to_phonetic(trimmed)
-            self.fallback_speech.speak(phonetic_sentence, interrupt=False)
-            return True
-
+        logger.warning("FilipinoEngine: Unable to synthesize offline Filipino speech for %r", trimmed)
         return False
 
     def _get_sherpa_tts(self):
-        """Lazy loader for sherpa_onnx.OfflineTts using local Filipino VITS model."""
+        """Lazy loader for sherpa_onnx.OfflineTts using local Filipino MMS-TTS tgl VITS model."""
         if self._sherpa_initialized:
             return self._sherpa_tts
 
@@ -495,179 +579,100 @@ class FilipinoEngine:
             self._sherpa_tts = None
             return None
 
+    def synthesize_to_wav(self, text: str, out_wav_path: str) -> bool:
+        """Public alias to synthesize Filipino text cleanly to a standardized 22050Hz WAV."""
+        return self._synthesize_sherpa_filipino(text, out_wav_path)
+
     def _synthesize_sherpa_filipino(self, text: str, out_wav_path: str) -> bool:
-        """Synthesize Filipino text using sherpa-onnx OfflineTts."""
+        """
+        Synthesize Filipino text using sherpa-onnx OfflineTts (MMS-TTS tgl VITS),
+        split gently on sentence boundaries for natural pacing, then convert to
+        22050 Hz mono s16, RMS-normalized, with standard pre/post silence padding.
+        """
         tts = self._get_sherpa_tts()
         if not tts:
             return False
 
-        norm_text = normalize_for_sherpa_filipino(text)
-        if not norm_text:
+        # Split multi-sentence text on terminal punctuation or semicolons/colons
+        raw_clauses = [c.strip() for c in re.split(r"[.!?;:\n]+", text) if c.strip()]
+        if not raw_clauses:
             return False
 
         try:
-            audio = tts.generate(norm_text, sid=0, speed=1.0)
-            if audio is None or len(audio.samples) == 0:
+            import numpy as np
+
+            all_chunks: List[np.ndarray] = []
+            src_sr = 16000
+            for idx, clause in enumerate(raw_clauses):
+                norm_clause = normalize_for_sherpa_filipino(clause)
+                if not norm_clause:
+                    continue
+                audio = tts.generate(norm_clause, sid=0, speed=0.95)
+                if audio is None or len(audio.samples) == 0:
+                    continue
+                src_sr = audio.sample_rate
+                chunk = np.asarray(audio.samples, dtype=np.float64) * 32767.0
+                all_chunks.append(chunk)
+                if idx < len(raw_clauses) - 1:
+                    all_chunks.append(np.zeros(int(src_sr * 0.140), dtype=np.float64))
+
+            if not all_chunks:
                 return False
 
-            sample_rate = audio.sample_rate
-            samples = audio.samples
+            combined = np.concatenate(all_chunks)
+            pcm_int16 = np.clip(np.round(combined), -32767, 32767).astype(np.int16)
 
-            # Write WAV file using sherpa_onnx helper if available
-            try:
-                import sherpa_onnx
-                if hasattr(sherpa_onnx, "write_wave"):
-                    sherpa_onnx.write_wave(out_wav_path, samples, sample_rate)
-                    if os.path.isfile(out_wav_path) and os.path.getsize(out_wav_path) > 44:
-                        _pad_wav_with_silence(out_wav_path, pre_ms=200, post_ms=100)
-                        return True
-            except Exception:
-                pass
-
-            try:
-                import numpy as np
-                pcm_bytes = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
-            except ImportError:
-                import struct
-                pcm_bytes = bytearray()
-                for s in samples:
-                    val = max(-32768, min(32767, int(s * 32767.0)))
-                    pcm_bytes.extend(struct.pack("<h", val))
-
+            os.makedirs(os.path.dirname(os.path.abspath(out_wav_path)), exist_ok=True)
             with wave.open(out_wav_path, "wb") as wf:
                 wf.setnchannels(1)
                 wf.setsampwidth(2)
-                wf.setframerate(sample_rate)
-                wf.writeframes(pcm_bytes)
+                wf.setframerate(src_sr)
+                wf.writeframes(pcm_int16.tobytes())
 
             if os.path.isfile(out_wav_path) and os.path.getsize(out_wav_path) > 44:
-                _pad_wav_with_silence(out_wav_path, pre_ms=200, post_ms=100)
-                return True
+                return standardize_wav_file(
+                    out_wav_path,
+                    target_sr=TARGET_SAMPLE_RATE,
+                    pre_ms=DEFAULT_PRE_SILENCE_MS,
+                    post_ms=DEFAULT_POST_SILENCE_MS,
+                )
             return False
         except Exception as exc:
-            logger.warning("sherpa_onnx generation error for text %r: %s", norm_text, exc)
+            logger.warning("sherpa_onnx generation error for text %r: %s", text, exc)
             return False
-
-    def _try_edge_tts_synthesis(self, text: str, out_wav_path: str, timeout: float = 3.0) -> bool:
-        """
-        Attempt online synthesis using edge-tts (fil-PH-AngeloNeural) with ffmpeg conversion.
-        """
-        import shutil
-        import subprocess
-        tmp_mp3 = out_wav_path + ".tmp.mp3"
-        try:
-            edge_bin = shutil.which("edge-tts")
-            ffmpeg_bin = shutil.which("ffmpeg")
-            if not edge_bin or not ffmpeg_bin:
-                return False
-
-            cmd_tts = [
-                edge_bin,
-                "--voice", "fil-PH-AngeloNeural",
-                "--text", text,
-                "--write-media", tmp_mp3,
-            ]
-            res = subprocess.run(cmd_tts, timeout=timeout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if res.returncode != 0 or not os.path.isfile(tmp_mp3) or os.path.getsize(tmp_mp3) == 0:
-                return False
-
-            cmd_ff = [
-                ffmpeg_bin, "-y",
-                "-i", tmp_mp3,
-                "-ar", "22050",
-                "-ac", "1",
-                "-c:a", "pcm_s16le",
-                out_wav_path,
-            ]
-            ff_res = subprocess.run(cmd_ff, timeout=timeout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if ff_res.returncode == 0 and os.path.isfile(out_wav_path):
-                _pad_wav_with_silence(out_wav_path, pre_ms=200, post_ms=100)
-                return True
-            return False
-        except Exception as exc:
-            logger.debug("Edge-TTS synthesis attempt failed: %s", exc)
-            return False
-        finally:
-            if os.path.isfile(tmp_mp3):
-                try:
-                    os.remove(tmp_mp3)
-                except Exception:
-                    pass
-
-    def _synthesize_phonetic_pcm(self, word: str) -> Optional[bytes]:
-        """Synthesize pure Filipino phonetic syllables to PCM frames."""
-        phonetic = filipino_to_phonetic(word)
-        if not phonetic:
-            return None
-
-        piper_bin = None
-        piper_model = None
-        if self.fallback_speech:
-            engine = getattr(self.fallback_speech, "_engine", self.fallback_speech)
-            piper_bin = getattr(engine, "_binary", None)
-            piper_model = getattr(engine, "_model", None)
-
-        if not piper_bin or not piper_model:
-            from brailce.speech.piper_engine import _find_piper_binary, _find_piper_model
-            piper_bin = _find_piper_binary()
-            piper_model = _find_piper_model()
-
-        if piper_bin and piper_model and os.path.isfile(piper_bin) and os.path.isfile(piper_model):
-            import subprocess
-            t_fd, t_path = tempfile.mkstemp(prefix="brailce_fil_phon_", suffix=".wav")
-            os.close(t_fd)
-            try:
-                cmd = [
-                    piper_bin,
-                    "--model", piper_model,
-                    "--output_file", t_path,
-                    "--length_scale", "1.08",
-                    "--noise_scale", "0.5",
-                    "--noise_w", "0.6",
-                ]
-                p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                p.communicate(f"{phonetic}.\n".encode("utf-8"), timeout=5.0)
-                if os.path.isfile(t_path) and os.path.getsize(t_path) > 44:
-                    with wave.open(t_path, "rb") as wf:
-                        return wf.readframes(wf.getnframes())
-            except Exception:
-                pass
-            finally:
-                if os.path.isfile(t_path):
-                    try:
-                        os.remove(t_path)
-                    except Exception:
-                        pass
-        return None
 
     def _play_offline_concatenated(self, words: List[str]) -> bool:
         """
-        Concatenate cached word WAVs (or phonetic fallback WAVs) with a 50ms gap.
+        Concatenate cached Filipino word WAVs (preserving hyphens) with a 50ms gap
+        and standardize loudness/sample rate. Zero English phonetic respelling!
         """
         tmp_fd, tmp_path = tempfile.mkstemp(prefix="brailce_fil_concat_", suffix=".wav")
         os.close(tmp_fd)
 
         try:
-            framerate = 22050
-            gap_pcm = b"\x00\x00" * int(framerate * 0.050)  # 50ms gap between segments
-            pre_silence = b"\x00\x00" * int(framerate * 0.200)  # 200ms digital zero PCM
-            post_silence = b"\x00\x00" * int(framerate * 0.100)  # 100ms digital zero PCM
+            framerate = TARGET_SAMPLE_RATE
+            gap_pcm = b"\x00\x00" * int(framerate * 0.050)
             combined_pcm = bytearray()
 
             for i, raw_word in enumerate(words):
-                w_clean = re.sub(r"[^a-zA-Z]", "", raw_word).lower()
-                cached_wav = get_filipino_word_path(w_clean) if w_clean else None
+                cached_wav = get_filipino_word_path(raw_word)
                 pcm_data = None
-
                 if cached_wav and os.path.isfile(cached_wav):
                     try:
                         with wave.open(cached_wav, "rb") as wf:
-                            pcm_data = wf.readframes(wf.getnframes())
+                            raw_frames = wf.readframes(wf.getnframes())
+                        # Trim outer padding from cached word so stitch is tight
+                        import numpy as np
+                        arr = np.frombuffer(raw_frames, dtype=np.int16)
+                        nz = np.where(np.abs(arr) > 150)[0]
+                        if nz.size > 0:
+                            pad = int(framerate * 0.025)
+                            trimmed = arr[max(0, int(nz[0]) - pad) : min(arr.size, int(nz[-1]) + pad)]
+                            pcm_data = trimmed.tobytes()
+                        else:
+                            pcm_data = raw_frames
                     except Exception:
                         pcm_data = None
-
-                if not pcm_data:
-                    pcm_data = self._synthesize_phonetic_pcm(raw_word)
 
                 if pcm_data:
                     combined_pcm.extend(pcm_data)
@@ -681,8 +686,9 @@ class FilipinoEngine:
                 wf_out.setnchannels(1)
                 wf_out.setsampwidth(2)
                 wf_out.setframerate(framerate)
-                wf_out.writeframes(pre_silence + combined_pcm + post_silence)
+                wf_out.writeframes(combined_pcm)
 
+            standardize_wav_file(tmp_path, pre_ms=DEFAULT_PRE_SILENCE_MS, post_ms=DEFAULT_POST_SILENCE_MS)
             return AudioDeviceCoordinator.play_wav_file(tmp_path, owner="filipino", timeout=25.0)
         except Exception as exc:
             logger.warning("Error in offline Filipino concatenation: %s", exc)
@@ -694,11 +700,21 @@ class FilipinoEngine:
                 except Exception:
                     pass
 
-    def speak_character(self, character: str) -> bool:
-        """Play clean character pronunciation (routes to clean English letter audio)."""
-        if self.fallback_speech and hasattr(self.fallback_speech, "speak_character"):
-            self.fallback_speech.speak_character(character)
-            return True
+    def speak_character(self, character: str, use_filipino_voice: bool = True) -> bool:
+        """
+        Play character pronunciation in Filipino mode.
+        When use_filipino_voice=True (default), uses pre-rendered Filipino character WAVs
+        from the same Filipino voice (brailce/audio/filipino/char_*.wav), falling back
+        to sherpa-onnx Tagalog name only if missing.
+        """
+        if use_filipino_voice:
+            wav_path = get_filipino_character_path(character)
+            if wav_path and os.path.isfile(wav_path):
+                return AudioDeviceCoordinator.play_wav_file(wav_path, owner="filipino_char", timeout=5.0)
+        if self.fallback_speech and hasattr(self.fallback_speech, "_character_engine"):
+            char_eng = self.fallback_speech._character_engine
+            if hasattr(char_eng, "play_cached_character") and char_eng.play_cached_character(character):
+                return True
         return False
 
     def speak_word(self, word: str) -> bool:

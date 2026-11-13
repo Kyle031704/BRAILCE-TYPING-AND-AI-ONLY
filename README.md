@@ -1,306 +1,100 @@
-# Brailce – A Portable Braille-to-Voice Assistive Device
+# Brailce — Offline Bilingual Braille Learning Device
 
-**Thesis Prototype**
-
-Brailce is a portable Raspberry Pi 5-based assistive device that allows users to press dedicated physical character buttons labeled with embossed Braille, receive immediate spoken feedback, build text through repeated key presses, and interact with a locally hosted offline AI assistant using Ollama.
+Brailce is a portable **Raspberry Pi 5** assistive learning device for visually impaired Grade 1 learners in **English (`en`)** and **Filipino (`fil`)**. It combines a dedicated physical Braille-embossed keypad, a `480x320` ILI9488 SPI LCD, 100% offline bilingual speech synthesis, a local Ollama AI tutor, and a Raspberry Pi Camera Module v2 Optical Braille Recognition (OBR) scanner.
 
 ---
 
-## Key Architectural Concept
+## Core Capabilities & Modes
 
-### Dedicated Braille Character Keypad
+| Mode | Purpose | Controls |
+|------|---------|----------|
+| **Free Input** | Immediate letter feedback (`1 key = 1 letter`) + clean whole-word pronunciation on Space/Enter | `A–Z`, `0–9`, `Space`, `Enter`, `Backspace`, `Clear` |
+| **Math Mode** | Safe Grade 1 arithmetic (`+`, `-`, `*`, `/`) with bilingual counting explanations and LCD solution card | Digits, operators, `Enter`, `Clear` |
+| **AI Assistant** | Offline Ollama (`lfm2.5-1.2b-instruct`) Q&A with bilingual guardrails and clean spoken normalization | Question input + `Enter` |
+| **Scanner Mode** | Offline classical dot-level Grade 1 Braille camera scanner with live presence detection and letter -> word readout | Position sheet, `Enter` to scan/repeat, any key to stop, `Clear` to reset |
 
-The physical input system uses a **dedicated character keypad** — NOT a traditional six-button Braille-dot keyboard.
-
-Each supported character has its own physical button. The keycap contains the corresponding **embossed Braille representation** of that character.
-
-**Example:**
-
-```
-Physical Button: [A]
-Keycap: A with embossed Braille pattern ⠁
-Software meaning: "A"
-```
-
-When the [A] button is pressed:
-1. The system identifies the character "A"
-2. Looks up the corresponding Braille pattern (Dot 1 → ⠁)
-3. Appends "A" to the text buffer
-4. Displays the character and its Braille representation
-5. Speaks "A" immediately via eSpeak NG
-6. Logs the event
-
-**The laptop keyboard simulates the dedicated character buttons during software development.**
+Desktop controls during simulation: `A–Z`, `0–9`, `+ - * /`, `Space`, `Enter`, `Backspace`, `F1` (Mode), `F2` (Clear), `F3` (Language EN/FIL), `F11`/`F12` (Volume Down/Up), `Esc` (Quit).
 
 ---
 
-## Application Modes
+## Offline Speech & Audio Architecture
 
-### 1. Free Input Mode (Default)
+Brailce uses **one consistent offline voice per language**, normalized to `22050 Hz` 16-bit mono PCM with `120 ms` pre-silence / `180 ms` post-silence and routed through `AudioDeviceCoordinator.play_wav_file()` (`aplay -q` on Raspberry Pi):
 
-Each character button press immediately produces audible feedback.
+1. **English (`en`) — Piper (`en_US-ryan-medium`):**
+   - `PiperEngine` locks VITS synthesis to `length_scale=1.05`, `noise_scale=0.5`, `noise_w=0.6`.
+   - `SpeechService.speak_word_clean()` uses cached `brailce/audio/words_en/<word>.wav` files or Option 1 carrier slicing (`"Please say: <word>."` via `brailce/speech/audio_normalize.py`) so short function words (`is`, `his`, `this`, `the`, `when`, `where`, `why`, `who`) are never clipped.
+2. **Filipino (`fil`) — `sherpa-onnx` MMS-TTS Tagalog (`tgl`) VITS:**
+   - `FilipinoEngine` synthesizes live Tagalog phrases completely offline from `brailce/models/filipino/model.onnx` + `tokens.txt` and plays pre-rendered WAVs from `brailce/audio/filipino/`.
+3. **Bilingual Strings (`brailce/i18n/strings.py`):**
+   - Single source of truth for `"en"` and `"fil"` prompts so LCD output and TTS output never diverge.
 
+### Pre-building & Auditing Audio Banks
+```bash
+# Generate / normalize offline English word cache and Filipino audio bank
+python tools/build_audio_bank.py
+
+# Verify sample rate, mono PCM, peak headroom, active RMS consistency (±3 dB), and zero silent WAVs
+python tools/audit_audio.py
 ```
-Press [A] → speak "A" → buffer: "A"
-Press [B] → speak "B" → buffer: "AB"
-Press [C] → speak "C" → buffer: "ABC"
-```
-
-### 2. AI Assistant Mode
-
-Natural language input is sent to a locally hosted Ollama LLM for offline AI responses.
-
-```
-Type: "What is Braille?" → Press Enter → AI processes → speaks response
-```
-
-Switch between modes using the **F1** key (laptop) or the dedicated **MODE** button (hardware).
 
 ---
 
-## Laptop Simulation
+## Raspberry Pi 5 Setup & Models (100% Offline Runtime)
 
-During development, the laptop keyboard simulates the dedicated character buttons:
+Model binaries and audio caches are excluded from git (`*.onnx`, `*.pt`, `brailce/models/`). Place/install the following on the Raspberry Pi 5 before offline operation:
 
-| Laptop Key | Simulates |
-|-----------|-----------|
-| A–Z | Dedicated letter buttons |
-| 0–9 | Dedicated number buttons |
-| + - * / | Dedicated math operator buttons |
-| Space | SPACE button |
-| Backspace | BACKSPACE button |
-| F1 | MODE button |
-| F2 | CLEAR button |
-| F11 | VOLUME DOWN button |
-| F12 | VOLUME UP button |
-| Esc | QUIT |
-| Enter | ENTER / AI Submit |
-
-**This is a one-key-per-character simulation, NOT a six-dot Braille combination input.**
+1. **System packages:**
+   ```bash
+   sudo apt update && sudo apt install -y alsa-utils python3-picamera2
+   ```
+2. **Python dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. **Piper English model:**
+   - Place `piper` binary and `en_US-ryan-medium.onnx` (+ `.json`) under `~/piper/` (or configure `speech.piper_bin` / `speech.piper_model` in `brailce/config/config.json`).
+4. **`sherpa-onnx` Filipino MMS-TTS (`tgl`) model:**
+   - Download `vits-mms-tgl` (`model.onnx` and `tokens.txt`) from sherpa-onnx releases and place inside `brailce/models/filipino/`.
+5. **Local Ollama LLM:**
+   ```bash
+   ollama pull lfm2.5-1.2b-instruct
+   ```
+6. *(Optional)* Secondary YOLO weights:
+   - Not required; `OBREngine` uses the offline classical dot-level recognizer by default (`vision.use_yolo_secondary: false`).
 
 ---
 
-## System Dependencies
+## Braille Scanner Lighting & Focus Guide (Pi Camera v2 / IMX219)
 
-### Required (System-Level)
+Reliable OBR requires crisp dot shadows and highlands:
+- **Camera color order:** Configured in `brailce/vision/camera.py` as `format="RGB888"` (matching OpenCV BGR memory layout without cyan tint), with AE/AWB settle and colour-gain lock.
+- **Close focus adjustment:** Adjust the IMX219 stock manual focus lens ring carefully for a **12–15 cm** working distance over a printed/embossed page until dot diameters measure `>= 6 px`.
+- **Raking LED lighting:** Mount a warm/neutral LED strip at a shallow **15–30° side angle** (raking light across the paper surface) rather than overhead flash, so each raised Braille dot casts a sharp highlight crest + dark crescent shadow.
+- **Diagnostic inspection:**
+  ```bash
+  python tools/scan_debug.py --camera --out scan_debug.png
+  python tools/scan_debug.py --image path/to/sample.jpg --out scan_debug.png
+  ```
 
-| Dependency | Purpose | Install |
-|-----------|---------|---------|
-| **Python 3.11+** | Runtime | [python.org](https://python.org) |
-| **eSpeak NG** | Offline text-to-speech | [GitHub](https://github.com/espeak-ng/espeak-ng) |
-| **Ollama** | Local LLM inference | [ollama.ai](https://ollama.ai) |
+---
 
-### Python Dependencies
+## Environment Configuration & Deployment
+
+Copy `.env.example` to `.env` (never commit `.env` or personal IPs/passwords) when deploying from a development PC:
 
 ```bash
-pip install -r requirements.txt
-```
-
-### Hardware-Only (NOT required for laptop)
-
-- `gpiozero` — Raspberry Pi GPIO control
-- `spidev` — SPI interface for TFT display
-- `Pillow` — Image rendering for TFT
-
----
-
-## Quick Start
-
-```bash
-# 1. Clone/download the project
-
-# 2. Install Python dependencies
-pip install -r requirements.txt
-
-# 3. Install eSpeak NG (system dependency)
-# Windows: Download from https://github.com/espeak-ng/espeak-ng/releases
-# Linux: sudo apt install espeak-ng
-
-# 4. Run the application
-python main.py
-
-# 5. Run with debug logging
-python main.py --debug
-
-# 6. Run with custom config
-python main.py --config path/to/config.json
-```
-
----
-
-## Configuration
-
-Edit `brailce/config/config.json`:
-
-```json
-{
-    "system": {
-        "simulation_mode": true
-    },
-    "input": {
-        "device": "keyboard"
-    },
-    "speech": {
-        "enabled": true,
-        "voice": "en",
-        "rate": 160,
-        "speak_each_character": true
-    },
-    "ai": {
-        "enabled": true,
-        "host": "http://127.0.0.1:11434",
-        "model": "MODEL_NAME_HERE"
-    }
-}
-```
-
----
-
-## Project Structure
-
-```
-brailce/
-├── main.py                      # Entry point
-├── requirements.txt             # Python dependencies
-├── README.md                    # This file
-│
-├── brailce/
-│   ├── config/                  # Configuration loading
-│   │   ├── config.json          # User configuration
-│   │   ├── defaults.py          # Default values
-│   │   └── loader.py            # JSON loader with deep merge
-│   │
-│   ├── core/                    # Application core
-│   │   ├── app.py               # Main application controller
-│   │   ├── events.py            # Event types and data models
-│   │   ├── mode_manager.py      # Mode switching logic
-│   │   └── state.py             # Mutable application state
-│   │
-│   ├── input/                   # Input device abstraction
-│   │   ├── base.py              # Abstract input device
-│   │   ├── keyboard_input.py    # Laptop keyboard simulation
-│   │   └── gpio_keypad.py       # Future GPIO keypad (stub)
-│   │
-│   ├── braille/                 # Braille mapping and encoding
-│   │   ├── models.py            # BrailleMapping dataclass
-│   │   ├── mapping.py           # Mapping service
-│   │   ├── encoder.py           # Character-to-Braille encoder
-│   │   ├── arithmetic.py        # Safe arithmetic (stub)
-│   │   └── mappings/            # JSON mapping tables
-│   │       ├── letters.json
-│   │       ├── numbers.json
-│   │       ├── punctuation.json
-│   │       ├── math.json
-│   │       └── nemeth.json
-│   │
-│   ├── modes/                   # Application modes
-│   │   ├── base_mode.py         # Abstract mode
-│   │   ├── free_input.py        # Free Input Mode
-│   │   └── ai_assistant.py      # AI Assistant Mode
-│   │
-│   ├── speech/                  # Text-to-speech
-│   │   ├── base.py              # Abstract speech engine
-│   │   └── espeak_engine.py     # eSpeak NG implementation
-│   │
-│   ├── display/                 # Display output
-│   │   ├── base.py              # Abstract display
-│   │   ├── console_display.py   # Terminal output (laptop)
-│   │   └── ili9488_display.py   # TFT display (stub)
-│   │
-│   ├── ai/                      # AI assistant (stub)
-│   ├── analytics/               # Logging and metrics (stub)
-│   ├── power/                   # Power monitoring
-│   │   ├── base.py              # Abstract power monitor
-│   │   └── simulated.py         # Simulated (laptop)
-│   │
-│   ├── utils/                   # Utilities
-│   │   ├── paths.py             # Path resolution
-│   │   ├── validation.py        # Input validation
-│   │   └── system_checks.py     # Dependency checks
-│   │
-│   └── tests/                   # Unit tests
-│       ├── test_events.py
-│       ├── test_state.py
-│       ├── test_configuration.py
-│       ├── test_braille_models.py
-│       ├── test_mode_manager.py
-│       └── test_validation.py
+cp .env.example .env
+# Edit PI_IP, PI_USER, PI_PASS, PI_REMOTE_DIR
+python tools/deploy_to_pi.py
 ```
 
 ---
 
 ## Testing
 
+Run the unit and integration test suite locally (laptop/headless, without Pi hardware):
+
 ```bash
-# Run all tests
-python -m pytest brailce/tests/ -v
-
-# Run specific test file
-python -m pytest brailce/tests/test_events.py -v
+python -m pytest brailce/tests -q --tb=short --maxfail=3
 ```
-
-All tests run on a laptop without physical Raspberry Pi hardware.
-
----
-
-## Future Raspberry Pi Deployment
-
-When the physical hardware is available:
-
-1. Set `input.device` to `"gpio"` in config.json
-2. Set `display.driver` to `"ili9488"` in config.json
-3. Configure GPIO pin assignments
-4. Install hardware dependencies (`gpiozero`, `spidev`, `Pillow`)
-5. The same application pipeline processes events from the GPIO keypad
-
-The logical event flow is identical regardless of input source:
-
-```
-Laptop Keyboard  ──┐
-                    ├──→ Logical Event → Application Pipeline
-GPIO Keypad      ──┘
-```
-
----
-
-## Implementation Phases
-
-| Phase | Description | Status |
-|-------|-------------|--------|
-| 1 | Architecture, events, config, input abstraction | ✅ Complete |
-| 2 | Braille mapping system, JSON tables | 🔲 Next |
-| 3 | Laptop keyboard simulation | 🔲 Planned |
-| 4 | Free Input Mode, text buffer, speech | 🔲 Planned |
-| 5 | eSpeak NG integration | 🔲 Planned |
-| 6 | Display abstraction, console display | 🔲 Planned |
-| 7 | Ollama interface, AI Assistant Mode | 🔲 Planned |
-| 8 | CSV logging, performance timing | 🔲 Planned |
-| 9 | Unit and integration tests | 🔲 Planned |
-| 10 | Raspberry Pi GPIO keypad | 🔲 Planned |
-| 11 | ILI9488 TFT display | 🔲 Planned |
-| 12 | Final Raspberry Pi integration | 🔲 Planned |
-
----
-
-## Troubleshooting
-
-### eSpeak NG not found
-- Windows: Download and install from the [releases page](https://github.com/espeak-ng/espeak-ng/releases)
-- Linux: `sudo apt install espeak-ng`
-- Verify: `espeak-ng --version`
-
-### Ollama not responding
-- Install from [ollama.ai](https://ollama.ai)
-- Start the server: `ollama serve`
-- Pull a model: `ollama pull <model_name>`
-- Verify: `curl http://127.0.0.1:11434/api/tags`
-
-### keyboard library requires admin/root
-- Windows: Run terminal as Administrator
-- Linux: Run with `sudo` or add user to the `input` group
-
----
-
-## License
-
-This is a thesis prototype developed for academic purposes.

@@ -154,13 +154,19 @@ class ConsoleDisplay(DisplayDevice):
         result: str,
         explanation: str,
         short_step: Optional[str] = None,
+        language: str = "en",
     ) -> None:
+        from brailce.i18n.strings import get_string
         c = self._c()
-        print(f"\n{c.CYAN}{c.BOLD}══════════ MATH SOLUTION (GRADE 1) ══════════{c.RESET}")
-        print(f"{c.GREEN}{c.BOLD}Equation   :{c.RESET} {c.YELLOW}{equation} = {result}{c.RESET}")
+        title = get_string("MATH_CARD_TITLE", language)
+        lbl_eq = get_string("MATH_LABEL_EQUATION", language)
+        lbl_st = get_string("MATH_LABEL_STEPS", language)
+        lbl_ex = get_string("MATH_LABEL_EXPLANATION", language)
+        print(f"\n{c.CYAN}{c.BOLD}══════════ {title} ══════════{c.RESET}")
+        print(f"{c.GREEN}{c.BOLD}{lbl_eq:<11}:{c.RESET} {c.YELLOW}{equation} = {result}{c.RESET}")
         if short_step:
-            print(f"{c.GREEN}{c.BOLD}Count Steps:{c.RESET} {c.YELLOW}{short_step}{c.RESET}")
-        print(f"{c.GREEN}{c.BOLD}Explanation:{c.RESET} {c.YELLOW}{explanation}{c.RESET}")
+            print(f"{c.GREEN}{c.BOLD}{lbl_st:<11}:{c.RESET} {c.YELLOW}{short_step}{c.RESET}")
+        print(f"{c.GREEN}{c.BOLD}{lbl_ex:<11}:{c.RESET} {c.YELLOW}{explanation}{c.RESET}")
         print(f"{c.CYAN}{c.BOLD}══════════════════════════════════════════════{c.RESET}\n")
 
     def show_camera_preview(

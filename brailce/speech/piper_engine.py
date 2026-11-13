@@ -32,17 +32,25 @@ import wave
 from typing import Optional
 
 from brailce.speech.audio_device import AudioDeviceCoordinator
+from brailce.speech.audio_normalize import (
+    DEFAULT_POST_SILENCE_MS,
+    DEFAULT_PRE_SILENCE_MS,
+    slice_carrier_audio,
+    standardize_wav_file,
+)
 from brailce.speech.base import SpeechEngine
 from brailce.speech.normalizer import (
     CHARACTER_FILENAME_MAP,
     normalize_for_piper,
-    prepare_spoken_word,
 )
 
 logger = logging.getLogger(__name__)
 
-# Standard VITS parameters for stable American English vowels and Grade 1 pacing
-PIPER_LENGTH_SCALE = "1.08"
+# Single fixed VITS parameter set for ALL English output (characters, words, sentences, intros).
+# Option 1 (carrier-sentence slicing "Please say: <word>." + brailce/audio/words_en/ cache) is used
+# rather than Option 2 ([[ phonemes ]] overrides) because it generalizes to arbitrary vocabulary
+# without Piper build-flag dependencies while keeping "is" stressed and /w/, /wh/ onsets intact.
+PIPER_LENGTH_SCALE = "1.05"
 PIPER_NOISE_SCALE = "0.5"
 PIPER_NOISE_W = "0.6"
 
@@ -52,10 +60,18 @@ def _find_cache_dir() -> Optional[str]:
     base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "audio", "characters"))
     if os.path.isdir(base):
         return base
-    pi_dir = "/home/raspberrypi5/brailce/brailce/audio/characters"
-    if os.path.isdir(pi_dir):
-        return pi_dir
+    home_dir = os.path.expanduser(os.path.join("~", "brailce", "brailce", "audio", "characters"))
+    if os.path.isdir(home_dir):
+        return home_dir
     return None
+
+
+def _find_words_cache_dir(create: bool = False) -> str:
+    """Locate (or create) the English word WAV cache directory (brailce/audio/words_en/)."""
+    base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "audio", "words_en"))
+    if create:
+        os.makedirs(base, exist_ok=True)
+    return base
 
 
 
@@ -109,8 +125,8 @@ def _find_piper_model() -> Optional[str]:
     return None
 
 
-def _pad_wav_with_silence(wav_path: str, pre_ms: int = 250, post_ms: int = 350) -> None:
-    """Prepend 250ms pure digital zero PCM silence and append 350ms post-silence to WAV file."""
+def _pad_wav_with_silence(wav_path: str, pre_ms: int = 150, post_ms: int = 200) -> None:
+    """Prepend 150ms pure digital zero PCM silence and append 200ms post-silence to WAV file."""
     try:
         with wave.open(wav_path, "rb") as wf:
             params = wf.getparams()
@@ -206,11 +222,29 @@ class PiperEngine(SpeechEngine):
 
         upper = clean.upper().rstrip(".")
 
+        spoken_name_map = {
+            "PLUS": "char_plus.wav",
+            "MINUS": "char_minus.wav",
+            "TIMES": "char_times.wav",
+            "DIVIDED BY": "char_divide.wav",
+            "EQUALS": "char_equals.wav",
+            "PERIOD": "char_period.wav",
+            "COMMA": "char_comma.wav",
+            "QUESTION MARK": "char_question.wav",
+            "EXCLAMATION MARK": "char_exclamation.wav",
+            "NUMBER SIGN": "char_hash.wav",
+            "ZERO": "char_0.wav", "ONE": "char_1.wav", "TWO": "char_2.wav",
+            "THREE": "char_3.wav", "FOUR": "char_4.wav", "FIVE": "char_5.wav",
+            "SIX": "char_6.wav", "SEVEN": "char_7.wav", "EIGHT": "char_8.wav", "NINE": "char_9.wav",
+        }
+
         fname = None
         if clean in CHARACTER_FILENAME_MAP:
             fname = CHARACTER_FILENAME_MAP[clean]
         elif upper in CHARACTER_FILENAME_MAP:
             fname = CHARACTER_FILENAME_MAP[upper]
+        elif upper in spoken_name_map:
+            fname = spoken_name_map[upper]
         elif len(upper) == 1 and upper.isalnum():
             fname = f"char_{upper}.wav"
 
@@ -222,6 +256,109 @@ class PiperEngine(SpeechEngine):
             return False
 
         return AudioDeviceCoordinator.play_wav_file(wav_path, owner="piper_cache", timeout=5.0)
+
+    def get_cached_word_path(self, word: str) -> Optional[str]:
+        """Return path to pre-rendered / cached English word WAV if it exists."""
+        clean = "".join(ch for ch in word.strip().lower() if ch.isalnum() or ch == "_")
+        if not clean:
+            return None
+        words_dir = _find_words_cache_dir(create=False)
+        candidate = os.path.join(words_dir, f"word_{clean}.wav")
+        if os.path.isfile(candidate) and os.path.getsize(candidate) > 44:
+            return candidate
+        return None
+
+    def play_cached_word(self, word: str) -> bool:
+        """Play English word from brailce/audio/words_en/word_<word>.wav if present."""
+        wav_path = self.get_cached_word_path(word)
+        if not wav_path:
+            return False
+        return AudioDeviceCoordinator.play_wav_file(wav_path, owner="piper_word_cache", timeout=10.0)
+
+    def synthesize_to_wav(
+        self,
+        text: str,
+        out_wav_path: str,
+        carrier_slice: bool = False,
+        sentence_silence: Optional[str] = None,
+    ) -> bool:
+        """
+        Synthesize speech to out_wav_path using locked Piper VITS parameters.
+        If carrier_slice=True, wraps text in "Please say: <text>." with a colon pause
+        and extracts the target word cleanly with slice_carrier_audio(), then applies
+        uniform 22050 Hz mono s16 conversion, RMS loudness normalization, and padding.
+        """
+        if not self.is_available():
+            return False
+
+        clean = text.strip()
+        if not clean:
+            return False
+
+        if carrier_slice:
+            synth_input = f"Please say: {clean.rstrip('.!?,;:') }."
+            sil = sentence_silence or "0.55"
+        else:
+            synth_input = clean
+            sil = sentence_silence or "0.35"
+
+        for attempt in range(3):
+            p_piper = None
+            try:
+                cmd_piper = [
+                    self._binary,
+                    "--model", self._model,
+                    "--output_file", out_wav_path,
+                    "--length_scale", PIPER_LENGTH_SCALE,
+                    "--noise_scale", PIPER_NOISE_SCALE,
+                    "--noise_w", PIPER_NOISE_W,
+                    "--sentence_silence", sil,
+                ]
+                p_piper = subprocess.Popen(
+                    cmd_piper,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                p_piper.communicate(synth_input.encode("utf-8") + b"\n", timeout=15)
+
+                if not os.path.isfile(out_wav_path) or os.path.getsize(out_wav_path) <= 44:
+                    time.sleep(0.08)
+                    continue
+
+                if carrier_slice:
+                    with wave.open(out_wav_path, "rb") as wf:
+                        params = wf.getparams()
+                        raw = wf.readframes(wf.getnframes())
+                    if params.sampwidth == 2 and len(raw) >= 2:
+                        total_samples = len(raw) // (params.sampwidth * params.nchannels)
+                        samples = struct.unpack(f"<{total_samples * params.nchannels}h", raw)
+                        if params.nchannels > 1:
+                            samples = samples[::params.nchannels]
+                        sliced = slice_carrier_audio(samples, sr=params.framerate)
+                        sliced_bytes = struct.pack(f"<{len(sliced)}h", *sliced)
+                        with wave.open(out_wav_path, "wb") as wf_out:
+                            wf_out.setnchannels(1)
+                            wf_out.setsampwidth(2)
+                            wf_out.setframerate(params.framerate)
+                            wf_out.writeframes(sliced_bytes)
+
+                if standardize_wav_file(
+                    out_wav_path,
+                    pre_ms=DEFAULT_PRE_SILENCE_MS,
+                    post_ms=DEFAULT_POST_SILENCE_MS,
+                ):
+                    return True
+            except Exception as exc:
+                logger.debug("Piper synthesize_to_wav attempt %d failed: %s", attempt, exc)
+                time.sleep(0.08)
+            finally:
+                if p_piper and p_piper.poll() is None:
+                    try:
+                        p_piper.kill()
+                    except Exception:
+                        pass
+        return False
 
     def speak(self, text: str, interrupt: Optional[bool] = None) -> None:
         if not text:
@@ -270,98 +407,68 @@ class PiperEngine(SpeechEngine):
 
     def _speak_sync(self, text: str) -> None:
         """
-        Synthesize speech:
-          - If single character: play clean cached char_*.wav directly (zero latency).
-          - Words on SPACE or sentences on ENTER: synthesize directly with Piper
-            using the exact same direct pipeline and parameters, padded with silence,
-            played strictly via `aplay -q <tmp_wav_path>`.
+        Unified Piper synthesis pipeline:
+          - Single character -> cached char_*.wav.
+          - Single isolated word -> disk cache brailce/audio/words_en/word_<w>.wav,
+            built on demand via carrier-sentence slicing ("Please say: <word>.") so
+            isolated function words ("is", "this", "his") and /w/, /wh/ onsets
+            sound identical to in-sentence speech.
+          - Multi-word sentence -> direct Piper synthesis with the same fixed VITS
+            parameters and uniform RMS + silence standardization.
         """
-        if not self.is_available():
-            logger.warning("Piper not available, unable to speak: %s", text)
-            return
-
         speech_text = normalize_for_piper(text)
         if not speech_text:
             return
 
         trimmed = speech_text.strip()
 
-        # Single character → cached char_*.wav
-        if len(trimmed) == 1:
-            if self.play_cached_character(trimmed):
-                return
+        # Single character / keystroke -> cached char_*.wav on worker queue
+        if self.play_cached_character(trimmed):
+            return
 
         words = speech_text.split()
-        is_single_word = len(words) == 1
+        target_word = speech_text.strip().rstrip(".!?,;:")
+        is_single_word = (len(words) == 1) and (len(target_word) > 1)
 
         if is_single_word:
-            target_word = speech_text.strip().rstrip(".!?,;:")
-            # Capitalize single word for proper sentence-initial prosody in neural model
-            synth_text = f"{target_word.capitalize()}."
-            length_scale = "1.12"
-            sentence_silence = "0.35"
-        else:
-            synth_text = speech_text
-            length_scale = "1.05"
-            sentence_silence = "0.35"
+            clean_word = target_word.lower()
+            # 1. Play immediately from word disk cache if available (even if live piper binary missing)
+            if self.play_cached_word(clean_word):
+                return
+
+        if not self.is_available():
+            logger.warning("Piper not available, unable to speak: %s", text)
+            return
 
         tmp_fd = None
         tmp_path = None
         try:
-            tmp_fd, tmp_path = tempfile.mkstemp(prefix="brailce_piper_", suffix=".wav")
-            os.close(tmp_fd)
-            tmp_fd = None
-
             audio_lock = AudioDeviceCoordinator.get_lock()
             with audio_lock:
-                for attempt in range(3):
-                    p_piper = None
-                    try:
-                        cmd_piper = [
-                            self._binary,
-                            "--model", self._model,
-                            "--output_file", tmp_path,
-                            "--length_scale", length_scale,
-                            "--noise_scale", PIPER_NOISE_SCALE,
-                            "--noise_w", PIPER_NOISE_W,
-                            "--sentence_silence", sentence_silence,
-                        ]
-                        p_piper = subprocess.Popen(
-                            cmd_piper,
-                            stdin=subprocess.PIPE,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                        )
-                        p_piper.communicate(synth_text.encode("utf-8") + b"\n", timeout=15)
+                if is_single_word:
+                    clean_word = "".join(ch for ch in target_word.lower() if ch.isalnum() or ch == "_")
+                    if clean_word:
+                        words_dir = _find_words_cache_dir(create=True)
+                        cache_path = os.path.join(words_dir, f"word_{clean_word}.wav")
+                        if self.synthesize_to_wav(target_word.lower(), cache_path, carrier_slice=True):
+                            AudioDeviceCoordinator.play_wav_file(cache_path, owner="piper_word_cache", timeout=15.0)
+                            return
 
-                        if not os.path.isfile(tmp_path) or os.path.getsize(tmp_path) == 0:
-                            time.sleep(0.08)
-                            continue
+                tmp_fd, tmp_path = tempfile.mkstemp(prefix="brailce_piper_", suffix=".wav")
+                os.close(tmp_fd)
+                tmp_fd = None
 
-                        # Prepend 250ms pure digital zero PCM silence and append 350ms post-silence
-                        _pad_wav_with_silence(tmp_path, pre_ms=250, post_ms=350)
-
-                        # Play strictly with `aplay -q <tmp_path>`
-                        success = AudioDeviceCoordinator.play_wav_file(tmp_path, owner="piper", timeout=30.0)
-                        if success:
-                            break
-                        else:
-                            time.sleep(0.08)
-
-                    except Exception as e:
-                        logger.debug("Piper speech attempt %d failed: %s", attempt, e)
-                        time.sleep(0.08)
-                    finally:
-                        if p_piper and p_piper.poll() is None:
-                            try:
-                                p_piper.kill()
-                            except Exception:
-                                pass
-                        with self._lock:
-                            self._current_process = None
-                        AudioDeviceCoordinator.unregister_process()
-
+                synth_ok = self.synthesize_to_wav(
+                    speech_text,
+                    tmp_path,
+                    carrier_slice=is_single_word,
+                )
+                if synth_ok:
+                    AudioDeviceCoordinator.play_wav_file(tmp_path, owner="piper", timeout=30.0)
         finally:
+            with self._lock:
+                self._current_process = None
+            AudioDeviceCoordinator.unregister_process()
             if tmp_fd is not None:
                 try:
                     os.close(tmp_fd)

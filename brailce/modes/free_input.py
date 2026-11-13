@@ -126,10 +126,7 @@ class FreeInputMode(BaseMode):
                     self.app.display.show_braille(unicode_char, dots_str, visual)
                     self.app.display.show_text_buffer(self.state.text_buffer)
                 if self.app.speech and self.app.config.get("speech", "speak_each_character", default=True):
-                    if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                        self.app.speech.speak_character(digit)
-                    else:
-                        self.app.speech.speak(speech_val)
+                    self.app.speech.speak_character(digit)
                 logger.info("FreeInput: NUMBER=%s (key=%s)", digit, char_upper)
                 return
             elif char_upper in "KLMNOPQRSTUVWXYZ":
@@ -146,7 +143,7 @@ class FreeInputMode(BaseMode):
         if not mapping:
             logger.warning("Character not supported: %r", character)
             if self.app.speech:
-                self.app.speech.speak("Unsupported")
+                self.app.speech.speak_text("Unsupported")
             return
 
         # 1. Update text buffer & Braille state
@@ -163,12 +160,9 @@ class FreeInputMode(BaseMode):
             )
             self.app.display.show_text_buffer(self.state.text_buffer)
 
-        # 3. Speech feedback (immediate character pronunciation via unified speech engine)
+        # 3. Speech feedback (immediate character pronunciation via unified speech facade)
         if self.app.speech and self.app.config.get("speech", "speak_each_character", default=True):
-            if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                self.app.speech.speak_character(mapping.character if mapping else character)
-            else:
-                self.app.speech.speak(mapping.speech if mapping else character)
+            self.app.speech.speak_character(mapping.character)
 
         # 4. Logging
         logger.info("FreeInput: CHAR=%s, BRAILLE=%s", mapping.character, mapping.braille_unicode)
@@ -189,33 +183,14 @@ class FreeInputMode(BaseMode):
 
         self.state.append_character(" ")
         self.state.update_braille_info("No dots", " ")
-        
+
         if self.app.display:
             self.app.display.show_character("Space")
             self.app.display.show_braille(" ", "No dots", "○\n○\n○")
             self.app.display.show_text_buffer(self.state.text_buffer)
-            
+
         if self.app.speech and last_word:
-            # Normalize completed word buffer using .strip().lower() BEFORE passing to TTS
-            clean_word = last_word.strip().lower()
-            clean_char = clean_word.rstrip(".")
-            if len(clean_char) == 1:
-                if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                    self.app.speech.speak_character(clean_char)
-                else:
-                    self.app.speech.speak(clean_char)
-            elif self.language == "fil":
-                spoken = prepare_spoken_word(clean_word, "fil")
-                self.filipino_engine.speak_filipino(spoken)
-            else:
-                # Prepare English completed word with silence buffer and trailing period
-                spoken = prepare_spoken_word(clean_word, "en")
-                if hasattr(self.app.speech, "speak_word") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                    self.app.speech.speak_word(spoken)
-                elif hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                    self.app.speech.speak_text(spoken, interrupt=False)
-                else:
-                    self.app.speech.speak(spoken)
+            self.app.speech.speak_word_clean(last_word)
 
         logger.info("FreeInput: SPACE (word: %r)", last_word)
 
@@ -228,58 +203,44 @@ class FreeInputMode(BaseMode):
         # Check for Language Mode Toggle: "FIL" or "EN"
         if query.upper() == "FIL":
             self.language = "fil"
+            if self.app.speech and hasattr(self.app.speech, "language"):
+                self.app.speech.language = "fil"
             self.state.clear_buffer()
+            from brailce.i18n.strings import get_string
+            status_text = get_string("LANG_STATUS_FIL", "fil")
+            spoken_text = get_string("LANG_SWITCHED_FIL", "fil")
             if self.app.display:
-                self.app.display.show_status("[FIL] Wikang Filipino")
+                self.app.display.show_status(status_text)
                 self.app.display.show_text_buffer("")
-            self.filipino_engine.play_announcement("fil")
+            if self.app.speech:
+                self.app.speech.speak_text(spoken_text, interrupt=True)
             logger.info("FreeInput: Language switched to FIL (Filipino)")
             return
 
         if query.upper() == "EN":
             self.language = "en"
+            if self.app.speech and hasattr(self.app.speech, "language"):
+                self.app.speech.language = "en"
             self.state.clear_buffer()
+            from brailce.i18n.strings import get_string
+            status_text = get_string("LANG_STATUS_EN", "en")
+            spoken_text = get_string("LANG_SWITCHED_EN", "en")
             if self.app.display:
-                self.app.display.show_status("[EN] English")
+                self.app.display.show_status(status_text)
                 self.app.display.show_text_buffer("")
-            self.filipino_engine.play_announcement("en")
+            if self.app.speech:
+                self.app.speech.speak_text(spoken_text, interrupt=True)
             logger.info("FreeInput: Language switched to EN (English)")
             return
 
         words = query.split()
         is_single_word = len(words) == 1
 
-        if is_single_word:
-            clean_word = query.strip().lower()
-            clean_char = clean_word.rstrip(".")
-            if len(clean_char) == 1:
-                if hasattr(self.app.speech, "speak_character") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                    self.app.speech.speak_character(clean_char)
-                elif self.app.speech:
-                    self.app.speech.speak(clean_char)
-            elif self.language == "fil":
-                spoken = prepare_spoken_word(clean_word, "fil")
-                self.filipino_engine.speak_filipino(spoken)
+        if self.app.speech:
+            if is_single_word:
+                self.app.speech.speak_word_clean(words[0])
             else:
-                spoken = prepare_spoken_word(clean_word, "en")
-                if self.app.speech:
-                    if hasattr(self.app.speech, "speak_sentence") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                        self.app.speech.speak_sentence(spoken, interrupt=False)
-                    elif hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                        self.app.speech.speak_text(spoken, interrupt=False)
-                    else:
-                        self.app.speech.speak(spoken)
-        else:
-            # Multi-word sentence
-            if self.language == "fil":
-                self.filipino_engine.speak_filipino(query)
-            elif self.app.speech:
-                if hasattr(self.app.speech, "speak_sentence") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                    self.app.speech.speak_sentence(query, interrupt=False)
-                elif hasattr(self.app.speech, "speak_text") and type(self.app.speech).__name__ not in ("MagicMock", "Mock"):
-                    self.app.speech.speak_text(query, interrupt=False)
-                else:
-                    self.app.speech.speak(query)
+                self.app.speech.speak_sentence(query, interrupt=False)
 
         # Reset buffer so next typing starts completely fresh without old inputs
         self.state.clear_buffer()

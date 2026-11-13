@@ -164,6 +164,6 @@ def test_piper_is_phonetic_map_and_parameters() -> None:
         PIPER_NOISE_SCALE,
         PIPER_NOISE_W,
     )
-    assert PIPER_LENGTH_SCALE == "1.08"
+    assert PIPER_LENGTH_SCALE == "1.05"
     assert PIPER_NOISE_SCALE == "0.5"
     assert PIPER_NOISE_W == "0.6"

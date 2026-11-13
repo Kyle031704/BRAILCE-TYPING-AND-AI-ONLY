@@ -533,35 +533,50 @@ class ILI9488Display(DisplayDevice):
     # Math Mode
     # -------------------------------------------------------------------------
 
+    def set_language(self, language: str) -> None:
+        self._language = "fil" if (language or "en").lower() == "fil" else "en"
+
     def show_math_result(
         self,
         equation: str,
         result: str,
         explanation: str,
         short_step: Optional[str] = None,
+        language: Optional[str] = None,
     ) -> None:
         if not self._draw:
             return
         import textwrap
+        from brailce.i18n.strings import get_string
+
+        lang = language or getattr(self, "_language", "en")
+        title = get_string("MATH_CARD_TITLE", lang)
+        lbl_eq = get_string("MATH_LABEL_EQUATION", lang)
+        lbl_st = get_string("MATH_LABEL_STEPS", lang)
+        lbl_ex = get_string("MATH_LABEL_EXPLANATION", lang)
 
         self._draw.rectangle([(0, 47), (self._width, self._height - 35)], fill=(11, 15, 25))
 
-        # Solution card
+        # Solution card (fits 480x320 cleanly with multi-line wrapping)
         self._draw.rectangle([(15, 56), (465, 276)], fill=(15, 23, 42), outline=(245, 158, 11), width=2)
-        self._draw.text((25, 66), "MATH SOLUTION (GRADE 1):", fill=(251, 191, 36))
-        self._draw.text((25, 92), f"Equation: {equation} = {result}", fill=(255, 255, 255))
+        self._draw.text((25, 62), f"{title}:", fill=(251, 191, 36))
+        self._draw.text((25, 84), f"{lbl_eq}: {equation} = {result}", fill=(255, 255, 255))
 
+        y_next = 106
         if short_step:
-            self._draw.text((25, 118), f"Steps: {short_step[:44]}", fill=(52, 211, 153))
+            self._draw.text((25, y_next), f"{lbl_st}: {short_step[:44]}", fill=(52, 211, 153))
+            y_next += 22
 
-        self._draw.text((25, 146), "Counting Explanation:", fill=(251, 191, 36))
-        exp_lines = textwrap.wrap(explanation, width=44)
-        y = 170
-        for line in exp_lines[:4]:
+        self._draw.text((25, y_next), f"{lbl_ex}:", fill=(251, 191, 36))
+        y = y_next + 20
+        exp_lines = textwrap.wrap(explanation, width=48)
+        for line in exp_lines:
+            if y + 16 > 272:
+                break
             self._draw.text((25, y), line, fill=(226, 232, 240))
-            y += 20
+            y += 17
 
-        self.show_status(f"Solved: {equation} = {result}")
+        self.show_status(f"{equation} = {result}")
         self._flush_to_hardware()
 
     # -------------------------------------------------------------------------

@@ -322,15 +322,15 @@ class TestVocalOutputAndModeIsolation:
     def test_free_input_character_word_sentence_flow(self) -> None:
         """
         Flow in Free Input Mode:
-        - every character typed is announced
-        - when space is pressed, pronounces the completed word
-        - when enter is pressed, pronounces the complete sentence
+        - every character typed is announced via speak_character
+        - when space is pressed, pronounces the completed word via speak_word_clean
+        - when enter is pressed on single word, routes through speak_word_clean
         """
         config = ConfigLoader.from_defaults()
         app = BrailceApp(config)
         app.setup()
 
-        mock_speech = MagicMock()
+        mock_speech = MagicMock(spec=SpeechService)
         app.speech = mock_speech
 
         free_mode = app._modes[AppMode.FREE_INPUT]
@@ -341,31 +341,30 @@ class TestVocalOutputAndModeIsolation:
         free_mode.handle_event(InputEvent(EventType.CHARACTER_PRESSED, character="A"))
         free_mode.handle_event(InputEvent(EventType.CHARACTER_PRESSED, character="T"))
         assert app.state.text_buffer == "CAT"
-        assert mock_speech.speak.call_count == 3
+        assert mock_speech.speak_character.call_count == 3
 
-        # 2. Press Space -> pronounces the completed word 'CAT'
+        # 2. Press Space -> pronounces the completed word 'CAT' via speak_word_clean
         free_mode.handle_event(InputEvent(EventType.SPACE_PRESSED))
         assert app.state.text_buffer == "CAT "
-        mock_speech.speak.assert_called_with("CAT")
+        mock_speech.speak_word_clean.assert_called_with("CAT")
 
-        # 3. Press Enter -> pronounces the complete sentence
+        # 3. Press Enter -> single word also routes through speak_word_clean
         free_mode.handle_event(InputEvent(EventType.ENTER_PRESSED))
-        mock_speech.speak.assert_called_with("CAT", interrupt=False)
-        # Buffer is cleared cleanly
+        assert mock_speech.speak_word_clean.call_count == 2
         assert app.state.text_buffer == ""
 
     def test_ai_mode_character_word_sentence_flow(self) -> None:
         """
         Flow in AI Assistant Mode:
-        - every character typed is announced
-        - when space is pressed, pronounces the completed word
-        - when enter is pressed, pronounces the complete question/sentence
+        - every character typed is announced via speak_character
+        - when space is pressed, pronounces the completed word via speak_word_clean
+        - when enter is pressed, pronounces the complete question/sentence via speak_sentence
         """
         config = ConfigLoader.from_defaults()
         app = BrailceApp(config)
         app.setup()
 
-        mock_speech = MagicMock()
+        mock_speech = MagicMock(spec=SpeechService)
         app.speech = mock_speech
 
         ai_mode = app._modes[AppMode.AI_ASSISTANT]
@@ -375,16 +374,17 @@ class TestVocalOutputAndModeIsolation:
         ai_mode.handle_event(InputEvent(EventType.CHARACTER_PRESSED, character="H"))
         ai_mode.handle_event(InputEvent(EventType.CHARACTER_PRESSED, character="I"))
         assert app.state.ai_query_buffer == "HI"
+        assert mock_speech.speak_character.call_count == 2
 
-        # 2. Press Space -> pronounces completed word 'HI'
+        # 2. Press Space -> pronounces completed word 'HI' via speak_word_clean
         ai_mode.handle_event(InputEvent(EventType.SPACE_PRESSED))
         assert app.state.ai_query_buffer == "HI "
-        mock_speech.speak.assert_called_with("HI")
+        mock_speech.speak_word_clean.assert_called_with("HI")
 
-        # 3. Press Enter -> pronounces sentence 'HI'
+        # 3. Press Enter -> pronounces sentence 'HI' via speak_sentence
         with patch("threading.Thread.start"):
             ai_mode.handle_event(InputEvent(EventType.ENTER_PRESSED))
-            mock_speech.speak.assert_called_with("HI", interrupt=False)
+            mock_speech.speak_sentence.assert_called_with("HI", interrupt=False)
 
     def test_mode_isolation_between_math_and_ai(self) -> None:
         """
@@ -397,7 +397,7 @@ class TestVocalOutputAndModeIsolation:
         app = BrailceApp(config)
         app.setup()
 
-        mock_speech = MagicMock()
+        mock_speech = MagicMock(spec=SpeechService)
         app.speech = mock_speech
 
         # 1. Enter Math mode and type 5 + 3

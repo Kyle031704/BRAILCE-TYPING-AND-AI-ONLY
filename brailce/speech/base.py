@@ -54,3 +54,29 @@ class SpeechEngine(abc.ABC):
     @abc.abstractmethod
     def engine_name(self) -> str:
         """Human-readable name for this speech engine."""
+
+    # ---- Optional High-Level Speech Facade Defaults ----
+
+    def speak_character(self, character: str) -> None:
+        """Speak an individual character/keystroke."""
+        self.speak(character)
+
+    def speak_word_clean(self, word: str) -> None:
+        """Speak a single completed word cleanly."""
+        self.speak(word)
+
+    def speak_word(self, word: str) -> None:
+        """Alias for speak_word_clean."""
+        self.speak_word_clean(word)
+
+    def speak_sentence(self, text: str, interrupt: bool = False) -> None:
+        """Speak a sentence or phrase."""
+        self.speak(text)
+
+    def speak_text(self, text: str, interrupt: bool = False) -> None:
+        """Speak general text."""
+        self.speak(text)
+
+    def speak_symbol(self, symbol: str, context: str = "text") -> None:
+        """Speak a math/punctuation symbol."""
+        self.speak(symbol)

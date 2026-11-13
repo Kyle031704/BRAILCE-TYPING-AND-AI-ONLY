@@ -55,6 +55,7 @@ class SpeechService(SpeechEngine):
         rate: int = 160,
         volume: int = 100,
         pitch: int = 50,
+        filipino_letter_voice: str = "filipino",
     ) -> None:
         engine = piper_engine or text_engine or character_engine or PiperEngine(rate=rate, volume=volume)
         self._engine = engine
@@ -66,9 +67,18 @@ class SpeechService(SpeechEngine):
         self._volume = volume
         self._pitch = pitch
         self._language = "en"
+        self._filipino_letter_voice = (filipino_letter_voice or "filipino").lower()
         self._filipino_engine = None
         self._last_utterance: Optional[Tuple[str, str, Dict[str, Any]]] = None
         self._lock = threading.Lock()
+
+    @property
+    def filipino_letter_voice(self) -> str:
+        return self._filipino_letter_voice
+
+    @filipino_letter_voice.setter
+    def filipino_letter_voice(self, val: str) -> None:
+        self._filipino_letter_voice = (val or "filipino").lower()
 
     @property
     def language(self) -> str:
@@ -139,7 +149,7 @@ class SpeechService(SpeechEngine):
         self.stop()
 
     def stop(self) -> None:
-        """Immediately stop active speech and cancel queued items."""
+        """Immediately stop active speech and cancel queued items in both EN and FIL queues."""
         try:
             self._engine.stop()
         except Exception as e:
@@ -154,20 +164,25 @@ class SpeechService(SpeechEngine):
                 self._text_engine.stop()
             except Exception:
                 pass
+        if self._filipino_engine is not None:
+            try:
+                self._filipino_engine.stop()
+            except Exception:
+                pass
         AudioDeviceCoordinator.interrupt_active()
 
     def shutdown(self) -> None:
         self.stop()
 
     # -----------------------------------------------------------------------
-    # High-Level Speech Methods (All Routed Directly into Piper via normalizer)
+    # High-Level Speech Methods (Single Unified Queue per Language)
     # -----------------------------------------------------------------------
 
     def speak_character(self, character: str) -> None:
         """
-        Speak individual keystroke feedback (A-Z -> a., digits, operators, punctuation).
-        Passes directly through normalizer.py into Piper.
-        Uses instant pre-cached carrier WAV if available.
+        Speak individual keystroke feedback (A-Z, digits, operators, punctuation).
+        In Filipino mode (when filipino_letter_voice == 'filipino'), uses the same
+        Filipino voice queue. Otherwise uses Piper Ryan via the character engine queue.
         """
         if not character:
             return
@@ -175,47 +190,58 @@ class SpeechService(SpeechEngine):
         if self._behavior == "completed_text_only":
             return
 
-        # In BOTH English and Filipino mode, single letters (A-Z), digits, and keystroke
-        # feedback strictly use the clean English letter pronunciation / English voice model
-        # (the clean cached brailce/audio/characters/char_*.wav or Piper directly)
-        # so A, B, C, E, G, J, K, R, S, T, V, Y, Z sound 100% crisp without Tagalog vocoder gargling!
+        if self._language == "fil" and self._filipino_letter_voice == "filipino":
+            self._record_utterance("character", character, {"character": character, "lang": "fil"})
+            self.filipino_engine.enqueue_character(character, use_filipino_voice=True)
+            return
+
         normalized = normalize_for_piper(character, is_character=True)
         if not normalized:
             return
 
         self._record_utterance("character", normalized, {"character": character})
 
-        # Try instant pre-cached character audio playback first
-        if hasattr(self._character_engine, "play_cached_character"):
-            if self._character_engine.play_cached_character(character):
-                return
-
         with self._lock:
             self._character_engine.speak(normalized, interrupt=False)
 
-    def speak_word(self, word: str) -> None:
+    def speak_word_clean(self, word: str, interrupt: bool = False) -> None:
         """
-        Speak a completed word (on SPACE).
+        Single unified word-speaking entry point used by Space, Enter-on-single-word,
+        Free Input, AI mode, Math mode, and Scanner mode.
         Completed words NEVER pass through single-letter phonetic mapping.
         """
         if not word:
             return
 
-        clean = word.strip().lower().rstrip(".")
+        clean = word.strip().lower().rstrip(".,!?:;")
+        if not clean:
+            return
         if len(clean) == 1:
             self.speak_character(clean)
             return
 
         if self._language == "fil":
-            self.filipino_engine.speak_filipino(clean)
+            if interrupt:
+                self.stop()
+            self._record_utterance("word", clean, {"word": clean, "lang": "fil"})
+            self.filipino_engine.enqueue_text(clean, interrupt=interrupt)
             return
 
         prepared = prepare_spoken_word(clean, "en")
-        self.speak_text(prepared, interrupt=False)
+        self.speak_text(prepared, interrupt=interrupt)
+
+    def speak_word(self, word: str) -> None:
+        """Backward-compatible alias for speak_word_clean."""
+        self.speak_word_clean(word)
 
     def speak_symbol(self, symbol: str, context: str = "text") -> None:
         """Speak mathematical operator or punctuation in context."""
         if not symbol:
+            return
+
+        if self._language == "fil" and self._filipino_letter_voice == "filipino":
+            self._record_utterance("symbol", symbol, {"symbol": symbol, "context": context, "lang": "fil"})
+            self.filipino_engine.enqueue_character(symbol, use_filipino_voice=True)
             return
 
         normalized = normalize_for_piper(symbol, context=context, is_character=True)
@@ -234,15 +260,7 @@ class SpeechService(SpeechEngine):
 
         words = text.strip().split()
         if len(words) == 1:
-            clean = words[0].strip().lower().rstrip(".")
-            if len(clean) == 1:
-                self.speak_character(clean)
-                return
-            if self._language == "fil":
-                self.filipino_engine.speak_filipino(clean)
-                return
-            prepared = prepare_spoken_word(clean, "en")
-            self.speak_text(prepared, interrupt=interrupt)
+            self.speak_word_clean(words[0], interrupt=interrupt)
             return
 
         self.speak_text(text, interrupt=interrupt)
@@ -255,8 +273,6 @@ class SpeechService(SpeechEngine):
     ) -> None:
         """
         Speak sentences, math explanations, AI responses, or mode announcements.
-        Passes directly through normalizer.py into Piper.
-        If single character, routes to speak_character() to play clean cached audio.
         """
         if not text:
             return
@@ -269,7 +285,8 @@ class SpeechService(SpeechEngine):
         if self._language == "fil":
             if interrupt:
                 self.stop()
-            self.filipino_engine.speak_filipino(text)
+            self._record_utterance("text", text, {"interrupt": interrupt, "lang": "fil"})
+            self.filipino_engine.enqueue_text(text, interrupt=interrupt)
             return
 
         normalized = normalize_for_piper(text)
@@ -287,13 +304,57 @@ class SpeechService(SpeechEngine):
                 self.stop()
             target_engine.speak(normalized, interrupt=interrupt)
 
+    def speak_mode_intro(self, mode: Any, interrupt: bool = True) -> str:
+        """
+        Return the localized mode intro text from i18n and enqueue it on the
+        single unified speech queue for the active language (zero overlapping threads).
+        """
+        from brailce.i18n.strings import get_mode_intro
+        intro = get_mode_intro(mode, language=self._language)
+
+        if self._language == "fil":
+            from brailce.speech.filipino_engine import get_filipino_mode_path
+            mode_wav = get_filipino_mode_path(mode)
+            if interrupt:
+                self.stop()
+            self._record_utterance("text", intro, {"mode": str(mode), "lang": "fil"})
+            if mode_wav and os.path.isfile(mode_wav):
+                self.filipino_engine.enqueue_wav(mode_wav, interrupt=False)
+            else:
+                self.filipino_engine.enqueue_text(intro, interrupt=False)
+        else:
+            self.speak_text(intro, interrupt=interrupt)
+        return intro
+
+    def speak_language_switch(self, new_lang: str, interrupt: bool = True) -> str:
+        """
+        Return localized language-switch announcement and enqueue it on the single queue.
+        """
+        from brailce.i18n.strings import get_string
+        lang_key = "LANG_SWITCHED_FIL" if (new_lang or "en").lower() == "fil" else "LANG_SWITCHED_EN"
+        phrase = get_string(lang_key, language=new_lang)
+
+        if (new_lang or "en").lower() == "fil":
+            from brailce.speech.filipino_engine import get_language_announcement_path
+            ann_wav = get_language_announcement_path("fil")
+            if interrupt:
+                self.stop()
+            self._record_utterance("text", phrase, {"lang_switch": "fil"})
+            if ann_wav and os.path.isfile(ann_wav):
+                self.filipino_engine.enqueue_wav(ann_wav, interrupt=False)
+            else:
+                self.filipino_engine.enqueue_text(phrase, interrupt=False)
+        else:
+            self.speak_text(phrase, interrupt=interrupt)
+        return phrase
+
     def speak_math_expression(self, expression: str) -> None:
         """Evaluate and speak mathematical expression with teacher clarity."""
         if not expression:
             return
 
         from brailce.braille.arithmetic import SafeArithmetic
-        solution = SafeArithmetic.solve(expression)
+        solution = SafeArithmetic.solve(expression, language=self._language)
         if solution.is_valid:
             self.speak_text(solution.explanation, interrupt=False)
         else:
@@ -313,7 +374,7 @@ class SpeechService(SpeechEngine):
 
     def speak(self, text: str, interrupt: Optional[bool] = None) -> None:
         """
-        Main entry point: passes through normalizer.py into Piper.
+        Main entry point: routes EN through Piper queue and FIL through FilipinoEngine queue.
         """
         if not text:
             return
@@ -330,7 +391,8 @@ class SpeechService(SpeechEngine):
         if self._language == "fil":
             if interrupt:
                 self.stop()
-            self.filipino_engine.speak_filipino(trimmed)
+            self._record_utterance("text", trimmed, {"interrupt": bool(interrupt), "lang": "fil"})
+            self.filipino_engine.enqueue_text(trimmed, interrupt=bool(interrupt))
             return
 
         self.speak_text(text, interrupt=bool(interrupt))
@@ -342,7 +404,8 @@ class SpeechService(SpeechEngine):
     def from_config(cls, config: Any) -> "SpeechService":
         """
         Build SpeechService according to application configuration.
-        Initializes Piper Neural TTS as the unified speech engine.
+        Initializes Piper Neural TTS as the unified English engine and
+        reads filipino_letter_voice toggle.
         """
         speech_cfg = config.section("speech") if hasattr(config, "section") else {}
 
@@ -352,6 +415,7 @@ class SpeechService(SpeechEngine):
         volume = int(speech_cfg.get("volume", 100))
         pitch = int(speech_cfg.get("pitch", 50))
         max_queue = int(speech_cfg.get("max_queue_size", 50))
+        fil_letter_voice = str(speech_cfg.get("filipino_letter_voice", "filipino")).lower()
 
         piper = PiperEngine(
             rate=rate,
@@ -368,4 +432,5 @@ class SpeechService(SpeechEngine):
             rate=rate,
             volume=volume,
             pitch=pitch,
+            filipino_letter_voice=fil_letter_voice,
         )

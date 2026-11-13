@@ -14,6 +14,26 @@ from brailce.core.app import BrailceApp
 from brailce.core.events import EventType, InputEvent
 from brailce.modes.ai_assistant import AIAssistantMode
 from brailce.braille.models import BrailleMapping
+from brailce.speech.service import SpeechService
+
+
+@pytest.fixture
+def mock_app() -> BrailceApp:
+    app = MagicMock(spec=BrailceApp)
+    app.state = MagicMock()
+    app.state.ai_query_buffer = ""
+    app.state.ai_processing = False
+    app.state.number_mode = False
+    app.state.language = "en"
+    app.display = MagicMock()
+    app.speech = MagicMock(spec=SpeechService)
+    app.encoder = MagicMock()
+    app.ai_client = MagicMock()
+    
+    app.config = MagicMock()
+    app.config.get.return_value = True
+    
+    return app
 
 
 class TestOllamaClient:
@@ -59,24 +79,6 @@ class TestOllamaClient:
 
 
 @pytest.fixture
-def mock_app() -> BrailceApp:
-    app = MagicMock(spec=BrailceApp)
-    app.state = MagicMock()
-    app.state.ai_query_buffer = ""
-    app.state.ai_processing = False
-    app.state.number_mode = False
-    app.display = MagicMock()
-    app.speech = MagicMock()
-    app.encoder = MagicMock()
-    app.ai_client = MagicMock()
-    
-    app.config = MagicMock()
-    app.config.get.return_value = True
-    
-    return app
-
-
-@pytest.fixture
 def ai_mode(mock_app: BrailceApp) -> AIAssistantMode:
     return AIAssistantMode(mock_app)
 
@@ -91,7 +93,7 @@ class TestAIAssistantMode:
         
         mock_app.state.append_ai_character.assert_called_once_with("A")
         mock_app.display.show_character.assert_called_once_with("A")
-        mock_app.speech.speak.assert_called_once_with("A")
+        mock_app.speech.speak_character.assert_called_once_with("A")
 
     def test_handle_space(self, ai_mode: AIAssistantMode, mock_app: BrailceApp) -> None:
         mock_app.state.ai_query_buffer = "What"
@@ -100,7 +102,7 @@ class TestAIAssistantMode:
         
         mock_app.state.append_ai_character.assert_called_once_with(" ")
         mock_app.display.show_character.assert_called_once_with("Space")
-        mock_app.speech.speak.assert_called_once_with("What")
+        mock_app.speech.speak_word_clean.assert_called_once_with("What")
 
     def test_handle_backspace(self, ai_mode: AIAssistantMode, mock_app: BrailceApp) -> None:
         mock_app.state.ai_query_buffer = "Hi"
@@ -148,7 +150,7 @@ class TestAIAssistantMode:
         assert mock_app.state.ai_processing is False
         assert mock_app.state.ai_last_response == "Braille is a tactile writing system."
         mock_app.display.show_ai_response.assert_called_once_with("Braille is a tactile writing system.")
-        mock_app.speech.speak.assert_called_with("Braille is a tactile writing system.")
+        mock_app.speech.speak_text.assert_called_with("Braille is a tactile writing system.", interrupt=False)
 
     def test_ignore_events_while_processing(self, ai_mode: AIAssistantMode, mock_app: BrailceApp) -> None:
         mock_app.state.ai_processing = True
