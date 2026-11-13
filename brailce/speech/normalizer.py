@@ -89,18 +89,33 @@ def prepare_spoken_word(raw_word: str, lang: str = "en") -> str:
        dictionary or any regex that replaces individual characters inside a word.
     2. Completed words are normalized using .strip().lower() BEFORE passing
        to TTS engine so uppercase strings are never read as acronyms.
-    3. Every completed word triggered by SPACE or ENTER (in BOTH English and Filipino modes)
-       MUST be passed as its exact, natural lowercase word (word.strip().lower()).
-       Do NOT alter the spelling of completed words!
+    3. Preserves trailing punctuation (. , ? ! :) for natural intonation (prosody),
+       and converts semicolons (;) to commas (,).
     """
     if not raw_word:
         return ""
 
-    clean_word = raw_word.strip().lower().rstrip(".,!?:;")
-    if not clean_word:
+    trimmed = raw_word.strip()
+    if not trimmed:
         return ""
 
-    return f"{clean_word}."
+    trailing = ""
+    if trimmed[-1] in ".?!,;:":
+        trailing = trimmed[-1]
+        if trailing == ";":
+            trailing = ","
+        base = trimmed[:-1].rstrip(".,!?:;")
+    else:
+        base = trimmed
+
+    base = base.strip().lower()
+    if not base:
+        return ""
+
+    if not trailing:
+        trailing = "."
+
+    return f"{base}{trailing}"
 
 
 def is_keystroke_feedback(text: str) -> bool:

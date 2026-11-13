@@ -65,7 +65,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
     # ---- Mode Names & Introductions (LCD + Spoken) ----
     "MODE_NAME_FREE_INPUT": {
         "en": "Free Input Mode",
-        "fil": "Malayang Pag-type",
+        "fil": "Malayang Pagpindot",
     },
     "MODE_NAME_MATH": {
         "en": "Math Mode",
@@ -73,27 +73,27 @@ STRINGS: Dict[str, Dict[str, str]] = {
     },
     "MODE_NAME_AI": {
         "en": "AI Assistant Mode",
-        "fil": "Modong AI Assistant",
+        "fil": "Modong Katulong na AI",
     },
     "MODE_NAME_SCANNER": {
         "en": "Scanner Mode",
-        "fil": "Modong Scanner",
+        "fil": "Modong Panuri ng Braille",
     },
     "MODE_INTRO_FREE_INPUT": {
         "en": "Free Input Mode. Type letters and words.",
-        "fil": "Malayang Pag-type. Mag-type ng mga titik at salita.",
+        "fil": "Malayang Pagpindot. Pindutin ang mga titik at salita.",
     },
     "MODE_INTRO_MATH": {
         "en": "Math Mode. Type numbers and operators.",
-        "fil": "Modong Matematika. Mag-type ng mga numero at operasyon.",
+        "fil": "Modong Matematika. Pindutin ang mga numero at operasyon.",
     },
     "MODE_INTRO_AI": {
         "en": "AI Assistant Mode. Type your question and press Enter.",
-        "fil": "Modong AI Assistant. Mag-type ng iyong tanong at pindutin ang Enter.",
+        "fil": "Modong Katulong na AI. Pindutin ang iyong tanong, tapos pindutin ang Enter.",
     },
     "MODE_INTRO_SCANNER": {
         "en": "Scanner Mode. Hold a Braille page and press Enter to scan.",
-        "fil": "Modong Scanner ng Braille. Itapat ang pahina at pindutin ang Enter upang mag-scan.",
+        "fil": "Modong Panuri ng Braille. Itapat ang pahina, tapos pindutin ang Enter upang basahin.",
     },
 
     # ---- Math Mode & Arithmetic Card Labels ----
@@ -181,7 +181,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
     },
     "AI_READY": {
         "en": "AI ready — type your question.",
-        "fil": "Handa na ang AI — itype ang iyong tanong.",
+        "fil": "Handa na ang AI — pindutin ang iyong tanong.",
     },
 
     # ---- Scanner Mode & Camera ----
@@ -194,20 +194,20 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "fil": "Sinusuri ang pahina ng Braille.",
     },
     "SCANNER_NO_BRAILLE": {
-        "en": "No Braille detected. Adjust the page.",
-        "fil": "Walang nakitang Braille. Ayusin ang pahina.",
+        "en": "No Braille detected. Adjust the camera position.",
+        "fil": "Walang nakitang Braille. Ayusin ang posisyon ng kamera.",
     },
     "SCANNER_BLURRY": {
         "en": "Image is blurry. Adjust distance or focus.",
         "fil": "Malabo ang larawan. Ayusin ang layo o pokus.",
     },
     "SCANNER_MOVE_CLOSER": {
-        "en": "Dots too small. Move the page closer.",
-        "fil": "Masyadong maliit ang mga tuldok. Ilapit ang pahina.",
+        "en": "Dots too small. Move the camera closer.",
+        "fil": "Masyadong maliit ang mga tuldok. Ilapit ang kamera.",
     },
     "SCANNER_MOVE_FARTHER": {
-        "en": "Dots too close. Move the page slightly farther.",
-        "fil": "Masyadong malapit. Ilayo nang kaunti ang pahina.",
+        "en": "Dots too close. Move the camera slightly farther.",
+        "fil": "Masyadong malapit. Ilayo nang kaunti ang kamera.",
     },
     "SCANNER_CAMERA_NOT_CONNECTED": {
         "en": "Camera not connected.",

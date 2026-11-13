@@ -74,6 +74,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "speak_control_events": False,
         # Voice for single letters in Filipino mode: "filipino" (default) or "english"
         "filipino_letter_voice": "filipino",
+        # Letter naming style in Filipino mode: "english_names" (ey, bi, si, ...) or "abakada" (ah, ba, ka, ...)
+        "filipino_letter_style": "english_names",
+        # Filipino voice architecture: "friendly_prerendered_plus_offline" (default) or "offline_only"
+        "filipino_voice": "friendly_prerendered_plus_offline",
+        # Filipino speech rate multiplier
+        "filipino_speed": 1.0,
         # Maximum speech queue size before dropping events
         "max_queue_size": 50,
     },
@@ -133,7 +139,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
     # ---- Vision ----
     "vision": {
-        "driver": "auto",
+        # "usb" for USB webcam (default), "picamera" for Pi Cam v2, "simulated" for file/test, "auto" to probe
+        "driver": "usb",
+        "usb_device": 0,
+        "autofocus": True,
+        "focus_value": -1,
+        "resolution": [1280, 720],
+        "still_resolution": [1920, 1080],
         "model_path": "brailce/vision/yolov8_braille.pt",
         "confidence_threshold": 0.22,
         "iou_threshold": 0.45,

@@ -44,7 +44,7 @@ from brailce.speech.espeak_engine import EspeakEngine
 from brailce.speech.piper_engine import PiperEngine
 from brailce.speech.service import SpeechService
 from brailce.utils.system_checks import run_all_checks
-from brailce.vision.camera import CameraDevice, SimulatedCamera, PiCameraDevice
+from brailce.vision.camera import CameraDevice, SimulatedCamera, PiCameraDevice, UsbWebcamDevice
 from brailce.vision.obr_engine import OBREngine
 
 logger = logging.getLogger(__name__)
@@ -167,20 +167,33 @@ class BrailceApp:
             self.display.set_power_monitor(self.power)
         
         # ---- Vision ----
-        vision_driver = self.config.get("vision", "driver", default="auto")
+        vision_driver = str(self.config.get("vision", "driver", default="usb")).lower()
         test_image = os.getenv("BRAILCE_TEST_IMAGE") or self.config.get("vision", "test_image_path", default="")
+        usb_device = self.config.get("vision", "usb_device", default=0)
+        autofocus = bool(self.config.get("vision", "autofocus", default=True))
+        focus_value = int(self.config.get("vision", "focus_value", default=-1))
+
         if vision_driver == "simulated":
             self.camera = SimulatedCamera(image_path=test_image if test_image else None)
         elif vision_driver == "picamera":
             self.camera = PiCameraDevice()
+        elif vision_driver == "usb":
+            self.camera = UsbWebcamDevice(device=usb_device, autofocus=autofocus, focus_value=focus_value)
+            if not self.camera.is_available() and test_image:
+                self.camera = SimulatedCamera(image_path=test_image)
         else:  # auto
-            pi_cam = PiCameraDevice()
-            if pi_cam.is_available():
-                self.camera = pi_cam
-                logger.info("Using physical Raspberry Pi Camera Module.")
+            usb_cam = UsbWebcamDevice(device=usb_device, autofocus=autofocus, focus_value=focus_value)
+            if usb_cam.is_available():
+                self.camera = usb_cam
+                logger.info("Using connected USB webcam.")
             else:
-                self.camera = SimulatedCamera(image_path=test_image if test_image else None)
-                logger.info("Physical camera not active — using SimulatedCamera fallback.")
+                pi_cam = PiCameraDevice()
+                if pi_cam.is_available():
+                    self.camera = pi_cam
+                    logger.info("Using physical Raspberry Pi Camera Module.")
+                else:
+                    self.camera = SimulatedCamera(image_path=test_image if test_image else None)
+                    logger.info("Physical camera not active — using SimulatedCamera fallback.")
             
         model_path = self.config.get("vision", "model_path", default="brailce/vision/yolov8_braille.pt")
         conf = float(self.config.get("vision", "confidence_threshold", default=0.22))

@@ -56,6 +56,8 @@ class SpeechService(SpeechEngine):
         volume: int = 100,
         pitch: int = 50,
         filipino_letter_voice: str = "filipino",
+        filipino_letter_style: str = "english_names",
+        filipino_voice: str = "friendly_prerendered_plus_offline",
     ) -> None:
         engine = piper_engine or text_engine or character_engine or PiperEngine(rate=rate, volume=volume)
         self._engine = engine
@@ -68,9 +70,21 @@ class SpeechService(SpeechEngine):
         self._pitch = pitch
         self._language = "en"
         self._filipino_letter_voice = (filipino_letter_voice or "filipino").lower()
+        self._filipino_letter_style = (filipino_letter_style or "english_names").lower()
+        self._filipino_voice = (filipino_voice or "friendly_prerendered_plus_offline").lower()
         self._filipino_engine = None
         self._last_utterance: Optional[Tuple[str, str, Dict[str, Any]]] = None
         self._lock = threading.Lock()
+
+    @property
+    def filipino_letter_style(self) -> str:
+        return self._filipino_letter_style
+
+    @filipino_letter_style.setter
+    def filipino_letter_style(self, val: str) -> None:
+        self._filipino_letter_style = (val or "english_names").lower()
+        if self._filipino_engine is not None:
+            self._filipino_engine.letter_style = self._filipino_letter_style
 
     @property
     def filipino_letter_voice(self) -> str:
@@ -192,7 +206,7 @@ class SpeechService(SpeechEngine):
 
         if self._language == "fil" and self._filipino_letter_voice == "filipino":
             self._record_utterance("character", character, {"character": character, "lang": "fil"})
-            self.filipino_engine.enqueue_character(character, use_filipino_voice=True)
+            self.filipino_engine.enqueue_character(character, use_filipino_voice=True, style=self._filipino_letter_style)
             return
 
         normalized = normalize_for_piper(character, is_character=True)
@@ -209,26 +223,36 @@ class SpeechService(SpeechEngine):
         Single unified word-speaking entry point used by Space, Enter-on-single-word,
         Free Input, AI mode, Math mode, and Scanner mode.
         Completed words NEVER pass through single-letter phonetic mapping.
+        Preserves trailing punctuation (. , ? ! :) for natural intonation (prosody).
         """
         if not word:
             return
 
-        clean = word.strip().lower().rstrip(".,!?:;")
-        if not clean:
+        prepared = prepare_spoken_word(word, lang=self._language)
+        if not prepared:
             return
-        if len(clean) == 1:
-            self.speak_character(clean)
+
+        bare = prepared.rstrip(".!?,;:")
+        if len(bare) == 1 and prepared.endswith("."):
+            self.speak_character(bare)
             return
 
         if self._language == "fil":
             if interrupt:
                 self.stop()
-            self._record_utterance("word", clean, {"word": clean, "lang": "fil"})
-            self.filipino_engine.enqueue_text(clean, interrupt=interrupt)
+            self._record_utterance("word", prepared, {"word": prepared, "lang": "fil"})
+            self.filipino_engine.enqueue_text(prepared, interrupt=interrupt)
             return
 
-        prepared = prepare_spoken_word(clean, "en")
-        self.speak_text(prepared, interrupt=interrupt)
+        if interrupt:
+            self.stop()
+
+        self._record_utterance("word", prepared, {"word": prepared})
+        with self._lock:
+            # Check cached word if standard period ending
+            if prepared.endswith(".") and hasattr(self._engine, "play_cached_word") and self._engine.play_cached_word(bare):
+                return
+            self.speak_text(prepared, interrupt=interrupt)
 
     def speak_word(self, word: str) -> None:
         """Backward-compatible alias for speak_word_clean."""
