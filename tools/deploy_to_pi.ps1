@@ -45,3 +45,4 @@ if ($DirectScp -and $PiHost) {
     Write-Host "python3 main.py" -ForegroundColor White
     Write-Host "--------------------------------------------------------" -ForegroundColor Gray
 }
+

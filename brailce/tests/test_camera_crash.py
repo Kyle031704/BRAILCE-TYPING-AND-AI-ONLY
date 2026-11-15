@@ -18,3 +18,4 @@ def test_usb_webcam_device_construction_no_name_error():
         assert cam.resolution == (1280, 720)
         assert cam.autofocus is True
         assert hasattr(cam, "_lock")
+

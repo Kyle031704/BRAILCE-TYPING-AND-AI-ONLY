@@ -28,3 +28,4 @@ echo " Update complete! All tests passed."
 echo " To start Brailce, run:"
 echo "     python3 main.py"
 echo "========================================================"
+

@@ -41,3 +41,4 @@ def test_speech_service_speak_character_filipino_no_crash():
     # Must execute smoothly without TypeError
     service.speak_character("B")
     fil_engine.enqueue_character.assert_called_once_with("B", use_filipino_voice=True, style="english_names")
+

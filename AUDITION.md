@@ -40,3 +40,4 @@ Listen to the sample files in `tools/voice_audition/` on standard headphones or 
 - [ ] **Number Reading:** Double-check compound numbers like 25 (*dalawampu't lima*) and 1234 (*isang libo dalawang daan at tatlumpu't apat*).
 - [ ] **Punctuation Timing:** Check that multi-clause sentences pause naturally at commas (250ms) and stop at periods (400ms).
 - [ ] **Loudness Consistency:** Keystroke clicks, word readouts, and mode switch announcements play at equal perceptual volume.
+

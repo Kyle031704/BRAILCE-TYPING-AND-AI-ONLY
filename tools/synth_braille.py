@@ -235,3 +235,4 @@ if __name__ == "__main__":
     img, exp, dots = generate_synthetic_braille_image(sample_text, dot_diameter=9.0, style="embossed", rotation_deg=0.0)
     cv2.imwrite("tools/sample_synth_embossed.png", img)
     print(f"Generated synthetic Braille image: {img.shape}, {len(dots)} dots. Expected text: {exp!r}")
+
