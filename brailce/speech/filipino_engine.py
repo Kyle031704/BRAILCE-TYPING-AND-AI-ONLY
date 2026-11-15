@@ -332,7 +332,9 @@ TAGALOG_HUNDREDS = {
 
 
 def tagalog_number(n: int) -> str:
-    """Convert an integer 0-999 into Tagalog number words."""
+    """Convert an integer 0-999,999 into natural Tagalog number words."""
+    if n < 0:
+        return f"negatibong {tagalog_number(-n)}"
     if n in TAGALOG_ONES:
         return TAGALOG_ONES[n]
     if n in TAGALOG_TEENS:
@@ -349,6 +351,19 @@ def tagalog_number(n: int) -> str:
         if rem == 0:
             return TAGALOG_HUNDREDS[hundreds]
         return f"{TAGALOG_HUNDREDS[hundreds]} at {tagalog_number(rem)}"
+    if 1000 <= n <= 999999:
+        thousands = n // 1000
+        rem = n % 1000
+        t_str = tagalog_number(thousands)
+        if t_str[-1] in "aeiou":
+            prefix = f"{t_str}ng libo"
+        elif t_str.endswith("n"):
+            prefix = f"{t_str}g libo"
+        else:
+            prefix = f"{t_str} na libo"
+        if rem == 0:
+            return prefix
+        return f"{prefix} {tagalog_number(rem)}"
     return str(n)
 
 
@@ -356,7 +371,8 @@ def normalize_for_sherpa_filipino(text: str) -> str:
     """
     Normalize text for sherpa-onnx Filipino VITS TTS:
     - Converts math operators: '+' -> 'dagdag', '=' -> 'ay', '-' -> 'bawas', etc.
-    - Converts digits (0-999) into Tagalog number words (e.g. 7 -> pito, 14 -> labing-apat).
+    - Converts digits (0-999,999) into Tagalog number words (e.g. 7 -> pito, 14 -> labing-apat, 1000 -> isang libo).
+    - Expands 'mga' -> 'manga' for natural phonetic realization.
     - Lowercases string (.lower()) so all characters match tokens.txt.
     - Strips unsupported characters not in tokens.txt.
     """
@@ -373,19 +389,22 @@ def normalize_for_sherpa_filipino(text: str) -> str:
     s = re.sub(r"(?<=\d)\s*-\s*(?=\d)", " bawas ", s)
     s = re.sub(r"\s+-\s+", " bawas ", s)
 
-    # 2. Convert digits 0-999 into Tagalog words
+    # 2. Respell 'mga' -> 'manga'
+    s = re.sub(r"\bmga\b", "manga", s, flags=re.IGNORECASE)
+
+    # 3. Convert digits 0-999,999 into Tagalog words
     def _replace_num(match: re.Match) -> str:
         val = int(match.group(0))
-        if 0 <= val <= 999:
+        if 0 <= val <= 999999:
             return f" {tagalog_number(val)} "
         return match.group(0)
 
-    s = re.sub(r"\b\d{1,3}\b", _replace_num, s)
+    s = re.sub(r"\b\d{1,6}\b", _replace_num, s)
 
-    # 3. Lowercase
+    # 4. Lowercase
     s = s.lower()
 
-    # 4. Remove punctuation not present in tokens.txt (periods, commas, question marks, colons, quotes)
+    # 5. Remove punctuation not present in tokens.txt
     s = re.sub(r"[^\w\s\-\'–]", " ", s)
 
     # Normalize whitespace
@@ -405,6 +424,7 @@ class FilipinoEngine:
 
     def __init__(self, fallback_speech: Optional[SpeechEngine] = None, max_queue_size: int = 50) -> None:
         self.fallback_speech = fallback_speech
+        self.letter_style = "english_names"
         self._sherpa_tts = None
         self._sherpa_initialized = False
         self._queue: queue.Queue[Optional[Tuple[str, Any]]] = queue.Queue(maxsize=max_queue_size)
@@ -436,8 +456,12 @@ class FilipinoEngine:
                 if kind == "wav":
                     AudioDeviceCoordinator.play_wav_file(payload, owner="filipino", timeout=30.0)
                 elif kind == "char":
-                    ch, use_fil = payload
-                    self.speak_character(ch, use_filipino_voice=use_fil)
+                    if len(payload) >= 3:
+                        ch, use_fil, style = payload[0], payload[1], payload[2]
+                    else:
+                        ch, use_fil = payload[0], payload[1]
+                        style = None
+                    self.speak_character(ch, use_filipino_voice=use_fil, style=style)
                 elif kind == "text":
                     self.speak_filipino(payload)
             except Exception as exc:
@@ -471,10 +495,10 @@ class FilipinoEngine:
         if wav_path and os.path.isfile(wav_path):
             self._enqueue("wav", wav_path, interrupt=interrupt)
 
-    def enqueue_character(self, character: str, use_filipino_voice: bool = True) -> None:
+    def enqueue_character(self, character: str, use_filipino_voice: bool = True, style: Optional[str] = None) -> None:
         """Non-blocking queued character feedback."""
         if character:
-            self._enqueue("char", (character, use_filipino_voice), interrupt=False)
+            self._enqueue("char", (character, use_filipino_voice, style), interrupt=False)
 
     def play_announcement(self, lang: str) -> bool:
         """Play 'Wikang Filipino' or 'English language' announcement."""
@@ -593,9 +617,18 @@ class FilipinoEngine:
         if not tts:
             return False
 
-        # Split multi-sentence text on terminal punctuation or semicolons/colons
-        raw_clauses = [c.strip() for c in re.split(r"[.!?;:\n]+", text) if c.strip()]
-        if not raw_clauses:
+        # Tokenize text into clauses and trailing punctuation delimiters
+        tokens = re.split(r"([.!?;:\n,]+)", text)
+        clauses_with_delims: List[Tuple[str, str]] = []
+        i = 0
+        while i < len(tokens):
+            clause = tokens[i].strip()
+            delim = tokens[i + 1] if i + 1 < len(tokens) else ""
+            if clause:
+                clauses_with_delims.append((clause, delim))
+            i += 2
+
+        if not clauses_with_delims:
             return False
 
         try:
@@ -603,7 +636,7 @@ class FilipinoEngine:
 
             all_chunks: List[np.ndarray] = []
             src_sr = 16000
-            for idx, clause in enumerate(raw_clauses):
+            for idx, (clause, delim) in enumerate(clauses_with_delims):
                 norm_clause = normalize_for_sherpa_filipino(clause)
                 if not norm_clause:
                     continue
@@ -613,8 +646,14 @@ class FilipinoEngine:
                 src_sr = audio.sample_rate
                 chunk = np.asarray(audio.samples, dtype=np.float64) * 32767.0
                 all_chunks.append(chunk)
-                if idx < len(raw_clauses) - 1:
-                    all_chunks.append(np.zeros(int(src_sr * 0.140), dtype=np.float64))
+
+                if idx < len(clauses_with_delims) - 1:
+                    # Preserve prosodic timing: 400ms for terminal punctuation, 250ms for commas/semicolons
+                    if any(c in delim for c in ".?!\n"):
+                        pause_sec = 0.400
+                    else:
+                        pause_sec = 0.250
+                    all_chunks.append(np.zeros(int(src_sr * pause_sec), dtype=np.float64))
 
             if not all_chunks:
                 return False
@@ -700,7 +739,7 @@ class FilipinoEngine:
                 except Exception:
                     pass
 
-    def speak_character(self, character: str, use_filipino_voice: bool = True) -> bool:
+    def speak_character(self, character: str, use_filipino_voice: bool = True, style: Optional[str] = None) -> bool:
         """
         Play character pronunciation in Filipino mode.
         When use_filipino_voice=True (default), uses pre-rendered Filipino character WAVs
@@ -711,6 +750,10 @@ class FilipinoEngine:
             wav_path = get_filipino_character_path(character)
             if wav_path and os.path.isfile(wav_path):
                 return AudioDeviceCoordinator.play_wav_file(wav_path, owner="filipino_char", timeout=5.0)
+            from brailce.i18n.fil_keys import get_filipino_keystroke_name
+            ch_name = get_filipino_keystroke_name(character, style=style or self.letter_style)
+            if ch_name:
+                return self.speak_filipino(ch_name)
         if self.fallback_speech and hasattr(self.fallback_speech, "_character_engine"):
             char_eng = self.fallback_speech._character_engine
             if hasattr(char_eng, "play_cached_character") and char_eng.play_cached_character(character):

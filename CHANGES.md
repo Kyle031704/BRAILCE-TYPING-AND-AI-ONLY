@@ -96,3 +96,37 @@ Run these checks directly on the Raspberry Pi 5 hardware after deployment:
 - [ ] Press any key mid-readout -> playback stops immediately. Press **Enter** again to repeat or **Clear** to reset for a new page.
 - [ ] Run `python3 tools/scan_debug.py --camera --out /tmp/scan_debug.png` to inspect dot alignment & Laplacian sharpness if focusing the IMX219 lens.
 
+---
+
+## 3. Phase 1–5 Comprehensive Architectural Upgrades (Round 3)
+
+### Phase 1: Frozen English Baseline & Crash Isolation
+- Verified and snapshot 100% frozen byte-for-byte behavior for all English audio files, `PiperEngine`, `EspeakEngine`, and `STRINGS["en"]` via `brailce/tests/test_english_frozen.py`.
+- Fixed `UsbWebcamDevice` missing `import threading` and `from typing import Any` (`NameError: name 'threading' is not defined`).
+- Resolved Filipino character synthesis regression when keypress events arrive with custom styles.
+
+### Phase 2: Scale-Adaptive Classical OBR Braille Scanner Rewrite
+- **Scale-Adaptive Multi-Scale Detection:** Difference-of-Gaussians ($\sigma=1.2, 1.8, 2.4, 3.2$) with shadow-highlight pairing and area filtering (`area >= 0.30 * med_a`) that eliminates edge artifacts while preserving embossed dot shadows.
+- **Robust Skew & Dot Pitch Estimation:** Nearest-neighbor vector orientation clustering in $\pm 15^\circ$ range with distance histograms detecting true physical dot pitch ($p_{dot}$).
+- **Global Lattice Fitter & Metric Alignment:** Symmetric cell boundary partition at $(p_{cell} + p_{dot}) / 2$ with intra-cell dot column tolerance $[0.82 \cdot p_{dot}, 1.18 \cdot p_{dot}]$ and inter-cell space tolerance $\ge 1.35 \cdot p_{dot}$.
+- **Non-Braille Rejection:** Safe rejection of monitor terminal photos (`tools/test_real_cam.jpg`) and random noise pages via unknown-cell ratio limit ($>20\%$) and line density coherence.
+- Added comprehensive ground truth suite `tools/synth_braille.py`, `tools/eval_real_scans.py`, and `brailce/tests/test_obr_synthetic.py` (accuracy $\ge 90\%$ across dot diameters 7–12px, rotations $\pm 5^\circ$, and both ink and embossed textures).
+
+### Phase 3: Natural Filipino Prosody, Expanded Lexicon & Audition Suite
+- **Single Lexicon Truth:** Mapped letter/number/symbol names via `brailce/i18n/fil_keys.py`.
+- **Numbers to 999,999:** Full Tagalog number expansion in `brailce/speech/filipino_engine.py` (`tagalog_number`), supporting thousands (`libo`) and hundreds (`daan` / `raan`).
+- **Natural Sentence Rhythm:** Configured 250ms silence pause for commas and semicolons, 400ms for terminal punctuation (`.`, `?`, `!`, `\n`).
+- **Normalized Grammar Tokens:** Handled `"mga"` normalized to `"manga"`, and pre-synthesized all missing vocabulary WAVs (`word_libo.wav`, `word_manga.wav`, `word_pagpindot.wav`, `word_panuri.wav`, `word_posisyon.wav`, `word_tapos.wav`).
+- Generated complete candidate parameter evaluation and human listening checklist in `AUDITION.md` (all 3 parameter sets achieve 0.000% clipping).
+
+### Phase 4: High-Contrast ILI9488 LCD UI Typography & Layout
+- **Bundled Font:** Packaged clean TrueType font `brailce/display/fonts/BrailceDefault.ttf` supporting both standard Latin ASCII and Unicode Braille patterns (U+2800–U+28FF).
+- **Type Scale:** Active character scaled to 72px, mode header titles to 20px, labels to 18px, and body text to 15px.
+- **Emoji Elimination:** Clean textual headers (`FREE INPUT`, `MATH MODE`, `AI ASSISTANT`, `SCANNER`) with clean ASCII battery meter (`pct%` / `pct%+`).
+- Added screenshot verification tool `tools/render_screens.py` generating high-contrast renders across all operational modes.
+
+### Phase 5: Production Deployment & Verification Scripts
+- Added Windows PowerShell deployment script `tools/deploy_to_pi.ps1`.
+- Added Raspberry Pi automated update script `tools/pi_update.sh`.
+
+

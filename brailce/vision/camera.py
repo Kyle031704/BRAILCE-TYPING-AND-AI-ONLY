@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Any, Optional, Tuple, List, Dict
 
 try:
     import cv2

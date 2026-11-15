@@ -74,7 +74,7 @@ class SpeechService(SpeechEngine):
         self._filipino_voice = (filipino_voice or "friendly_prerendered_plus_offline").lower()
         self._filipino_engine = None
         self._last_utterance: Optional[Tuple[str, str, Dict[str, Any]]] = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     @property
     def filipino_letter_style(self) -> str:
@@ -206,7 +206,10 @@ class SpeechService(SpeechEngine):
 
         if self._language == "fil" and self._filipino_letter_voice == "filipino":
             self._record_utterance("character", character, {"character": character, "lang": "fil"})
-            self.filipino_engine.enqueue_character(character, use_filipino_voice=True, style=self._filipino_letter_style)
+            if self._filipino_letter_style and self._filipino_letter_style != "english_names":
+                self.filipino_engine.enqueue_character(character, use_filipino_voice=True, style=self._filipino_letter_style)
+            else:
+                self.filipino_engine.enqueue_character(character, use_filipino_voice=True)
             return
 
         normalized = normalize_for_piper(character, is_character=True)

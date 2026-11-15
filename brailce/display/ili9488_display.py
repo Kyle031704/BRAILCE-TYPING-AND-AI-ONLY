@@ -112,6 +112,32 @@ class ILI9488Display(DisplayDevice):
         self._fb_file = None
         self._image = None
         self._draw = None
+        self._language = "en"
+        self._font_char = None
+        self._font_title = None
+        self._font_label = None
+        self._font_body = None
+        self._font_small = None
+
+    def _load_font(self, size: int) -> Any:
+        try:
+            from PIL import ImageFont
+            candidates = [
+                os.path.join(os.path.dirname(__file__), "fonts", "BrailceDefault.ttf"),
+                os.path.join(os.path.dirname(__file__), "fonts", "DejaVuSans.ttf"),
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "C:/Windows/Fonts/arial.ttf",
+            ]
+            for p in candidates:
+                if os.path.isfile(p):
+                    return ImageFont.truetype(p, size)
+            return ImageFont.load_default()
+        except Exception:
+            try:
+                from PIL import ImageFont
+                return ImageFont.load_default()
+            except Exception:
+                return None
 
     @property
     def driver_name(self) -> str:
@@ -128,6 +154,11 @@ class ILI9488Display(DisplayDevice):
             from PIL import Image, ImageDraw
             self._image = Image.new("RGB", (self._width, self._height), color=(11, 15, 25))
             self._draw = ImageDraw.Draw(self._image)
+            self._font_char = self._load_font(72)
+            self._font_title = self._load_font(20)
+            self._font_label = self._load_font(18)
+            self._font_body = self._load_font(15)
+            self._font_small = self._load_font(13)
             logger.info("ILI9488Display canvas initialized (%dx%d).", self._width, self._height)
         except ImportError:
             logger.warning("Pillow not installed; running in fallback mode.")
@@ -278,10 +309,10 @@ class ILI9488Display(DisplayDevice):
 
         # Mode styling parameters (badge_bg, outline_color, text_color, title)
         mode_meta = {
-            AppMode.FREE_INPUT: ((6, 78, 59), (16, 185, 129), (52, 211, 153), "⌨ FREE INPUT"),
-            AppMode.MATH: ((120, 53, 15), (245, 158, 11), (251, 191, 36), "🔢 MATH MODE"),
-            AppMode.AI_ASSISTANT: ((91, 33, 182), (139, 92, 246), (192, 132, 252), "🤖 AI ASSISTANT"),
-            AppMode.SCANNER: ((21, 94, 117), (6, 182, 212), (56, 189, 248), "📷 SCANNER"),
+            AppMode.FREE_INPUT: ((6, 78, 59), (16, 185, 129), (52, 211, 153), "FREE INPUT"),
+            AppMode.MATH: ((120, 53, 15), (245, 158, 11), (251, 191, 36), "MATH MODE"),
+            AppMode.AI_ASSISTANT: ((91, 33, 182), (139, 92, 246), (192, 132, 252), "AI ASSISTANT"),
+            AppMode.SCANNER: ((21, 94, 117), (6, 182, 212), (56, 189, 248), "SCANNER"),
         }
         badge_bg, accent_color, text_color, badge_text = mode_meta.get(
             mode, ((55, 65, 81), (156, 163, 175), (255, 255, 255), "BRAILCE")
@@ -293,10 +324,10 @@ class ILI9488Display(DisplayDevice):
         # 1. Left: Mode pill badge
         pill_w = 148
         self._draw.rectangle([(12, 10), (12 + pill_w, 36)], fill=badge_bg, outline=accent_color, width=1)
-        self._draw.text((22, 16), badge_text, fill=text_color)
+        self._draw.text((22, 14), badge_text, font=self._font_label or None, fill=text_color)
 
         # 2. Center: Brand Logo
-        self._draw.text((200, 16), "✦ BRAILCE", fill=(255, 255, 255))
+        self._draw.text((200, 14), "BRAILCE", font=self._font_title or None, fill=(255, 255, 255))
 
         # 3. Right: Battery Indicator Widget
         pct, is_charging = self._get_battery_info()
@@ -313,10 +344,9 @@ class ILI9488Display(DisplayDevice):
         fill_w = max(1, int((batt_w - 4) * (pct / 100.0)))
         self._draw.rectangle([(batt_x + 2, batt_y + 2), (batt_x + 2 + fill_w, batt_y + batt_h - 2)], fill=batt_color)
 
-        # Percentage text & charging bolt
-        bolt = "⚡" if is_charging else ""
-        batt_label = f"{pct}%{bolt}"
-        self._draw.text((batt_x + batt_w + 7, batt_y + 1), batt_label, fill=(226, 232, 240))
+        # Percentage text
+        batt_label = f"{pct}%" if not is_charging else f"{pct}%+"
+        self._draw.text((batt_x + batt_w + 7, batt_y + 1), batt_label, font=self._font_small or None, fill=(226, 232, 240))
 
     # =========================================================================
     # Operating Modes Rendering
@@ -368,9 +398,12 @@ class ILI9488Display(DisplayDevice):
 
         # Character card (Top Left)
         self._draw.rectangle([(15, 56), (195, 175)], fill=(15, 23, 42), outline=(16, 185, 129), width=1)
-        self._draw.text((25, 68), "ACTIVE CHARACTER:", fill=(52, 211, 153))
+        self._draw.text((25, 64), "ACTIVE CHARACTER:", font=self._font_small or None, fill=(52, 211, 153))
         display_char = character if character.strip() else "[Space]"
-        self._draw.text((25, 105), display_char, fill=(255, 255, 255))
+        if display_char == "[Space]":
+            self._draw.text((35, 105), display_char, font=self._font_title or None, fill=(255, 255, 255))
+        else:
+            self._draw.text((75, 82), display_char, font=self._font_char or None, fill=(255, 255, 255))
         self._flush_to_hardware()
 
     def show_braille(
@@ -613,37 +646,40 @@ class ILI9488Display(DisplayDevice):
 
             resized = cv2.resize(frame, (self._width, self._height))
             rgb_frame = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-            self._image = Image.fromarray(rgb_frame)
-            self._draw = ImageDraw.Draw(self._image)
+            preview_img = Image.fromarray(rgb_frame)
+            draw = ImageDraw.Draw(preview_img)
 
             # Viewfinder frame: Emerald corners
             mx, my = int(self._width * 0.12), int(self._height * 0.15)
             bx, by = self._width - mx, self._height - my
-            self._draw.rectangle([(mx, my), (bx, by)], outline=(16, 185, 129), width=3)
+            draw.rectangle([(mx, my), (bx, by)], outline=(16, 185, 129), width=3)
             # Center crosshair
             cx, cy = self._width // 2, self._height // 2
-            self._draw.line([(cx - 15, cy), (cx + 15, cy)], fill=(16, 185, 129), width=2)
-            self._draw.line([(cx, cy - 15), (cx, cy + 15)], fill=(16, 185, 129), width=2)
+            draw.line([(cx - 15, cy), (cx + 15, cy)], fill=(16, 185, 129), width=2)
+            draw.line([(cx, cy - 15), (cx, cy + 15)], fill=(16, 185, 129), width=2)
 
-            # Header with battery widget
-            self._draw_header(AppMode.SCANNER)
+            with self._display_lock:
+                self._image = preview_img
+                self._draw = draw
+                # Header with battery widget
+                self._draw_header(AppMode.SCANNER)
 
-            # Detection Pill Badge (centered right under header)
-            if status and "detected" in status.lower():
-                badge_w = 320
-                bx0 = (self._width - badge_w) // 2
-                if "no " in status.lower() or "not" in status.lower():
-                    self._draw.rectangle([(bx0, 52), (bx0 + badge_w, 76)], fill=(153, 27, 27), outline=(239, 68, 68), width=1)
-                    self._draw.text((bx0 + 10, 56), status[:46], fill=(255, 255, 255))
-                else:
-                    self._draw.rectangle([(bx0, 52), (bx0 + badge_w, 76)], fill=(6, 95, 70), outline=(52, 211, 153), width=1)
-                    self._draw.text((bx0 + 10, 56), status[:46], fill=(255, 255, 255))
+                # Detection Pill Badge (centered right under header)
+                if status and "detected" in status.lower():
+                    badge_w = 320
+                    bx0 = (self._width - badge_w) // 2
+                    if "no " in status.lower() or "not" in status.lower():
+                        draw.rectangle([(bx0, 52), (bx0 + badge_w, 76)], fill=(153, 27, 27), outline=(239, 68, 68), width=1)
+                        draw.text((bx0 + 10, 56), status[:46], fill=(255, 255, 255))
+                    else:
+                        draw.rectangle([(bx0, 52), (bx0 + badge_w, 76)], fill=(6, 95, 70), outline=(52, 211, 153), width=1)
+                        draw.text((bx0 + 10, 56), status[:46], fill=(255, 255, 255))
 
-            # Bottom Status Bar (solid fill to prevent text ghosting)
-            st = status if status else "Position Braille inside box | Press Enter to Scan"
-            self._draw.rectangle([(0, self._height - 34), (self._width, self._height)], fill=(3, 7, 18))
-            self._draw.line([(0, self._height - 34), (self._width, self._height - 34)], fill=(31, 41, 55), width=1)
-            self._draw.text((15, self._height - 24), f"● {st[:55]}", fill=(56, 189, 248))
+                # Bottom Status Bar (solid fill to prevent text ghosting)
+                st = status if status else "Position Braille inside box | Press Enter to Scan"
+                draw.rectangle([(0, self._height - 34), (self._width, self._height)], fill=(3, 7, 18))
+                draw.line([(0, self._height - 34), (self._width, self._height - 34)], fill=(31, 41, 55), width=1)
+                draw.text((15, self._height - 24), f"● {st[:55]}", fill=(56, 189, 248))
 
             self._flush_to_hardware()
         except Exception as exc:
