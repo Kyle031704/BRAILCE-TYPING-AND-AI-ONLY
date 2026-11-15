@@ -467,5 +467,3 @@ class SpeechService(SpeechEngine):
             filipino_voice=fil_voice,
             filipino_pitch_semitones=fil_pitch,
         )
-            filipino_letter_voice=fil_letter_voice,
-        )
