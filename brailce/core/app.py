@@ -429,3 +429,9 @@ class BrailceApp:
         """Handle interrupt signals gracefully."""
         logger.info("Signal %d received — shutting down.", signum)
         self.state.is_running = False
+
+
+if __name__ == "__main__":
+    from main import main
+    sys.exit(main())
+
