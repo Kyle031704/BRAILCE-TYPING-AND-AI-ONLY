@@ -52,6 +52,10 @@ class ConsoleDisplay(DisplayDevice):
         self._use_colors = use_colors and self._supports_color()
         self._current_mode: Optional[AppMode] = None
         self._last_cam_print: float = 0.0
+        self._language: str = "en"
+
+    def set_language(self, language: str) -> None:
+        self._language = language
 
     @property
     def driver_name(self) -> str:

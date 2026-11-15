@@ -137,6 +137,9 @@ def _pad_wav_with_silence(wav_path: str, pre_ms: int = 120, post_ms: int = 180) 
             wf.writeframes(pre_silence + pcm + post_silence)
     except Exception as exc:
         logger.debug("Silence padding error: %s", exc)
+
+
+def _find_filipino_audio_dir() -> str:
     """Locate the pre-rendered Filipino audio cache directory."""
     local_dir = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "audio", "filipino")
