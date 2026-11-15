@@ -58,6 +58,7 @@ class SpeechService(SpeechEngine):
         filipino_letter_voice: str = "filipino",
         filipino_letter_style: str = "english_names",
         filipino_voice: str = "friendly_prerendered_plus_offline",
+        filipino_pitch_semitones: float = 3.5,
     ) -> None:
         engine = piper_engine or text_engine or character_engine or PiperEngine(rate=rate, volume=volume)
         self._engine = engine
@@ -72,6 +73,7 @@ class SpeechService(SpeechEngine):
         self._filipino_letter_voice = (filipino_letter_voice or "filipino").lower()
         self._filipino_letter_style = (filipino_letter_style or "english_names").lower()
         self._filipino_voice = (filipino_voice or "friendly_prerendered_plus_offline").lower()
+        self._filipino_pitch_semitones = filipino_pitch_semitones
         self._filipino_engine = None
         self._last_utterance: Optional[Tuple[str, str, Dict[str, Any]]] = None
         self._lock = threading.RLock()
@@ -106,7 +108,7 @@ class SpeechService(SpeechEngine):
     def filipino_engine(self):
         if self._filipino_engine is None:
             from brailce.speech.filipino_engine import FilipinoEngine
-            self._filipino_engine = FilipinoEngine(fallback_speech=self)
+            self._filipino_engine = FilipinoEngine(fallback_speech=self, pitch_semitones=getattr(self, "_filipino_pitch_semitones", 3.5))
         return self._filipino_engine
 
     @property
@@ -443,6 +445,8 @@ class SpeechService(SpeechEngine):
         pitch = int(speech_cfg.get("pitch", 50))
         max_queue = int(speech_cfg.get("max_queue_size", 50))
         fil_letter_voice = str(speech_cfg.get("filipino_letter_voice", "filipino")).lower()
+        fil_voice = str(speech_cfg.get("filipino_voice", "sherpa_mms_tgl")).lower()
+        fil_pitch = float(speech_cfg.get("filipino_pitch_semitones", 3.5))
 
         piper = PiperEngine(
             rate=rate,
@@ -459,5 +463,9 @@ class SpeechService(SpeechEngine):
             rate=rate,
             volume=volume,
             pitch=pitch,
+            filipino_letter_voice=fil_letter_voice,
+            filipino_voice=fil_voice,
+            filipino_pitch_semitones=fil_pitch,
+        )
             filipino_letter_voice=fil_letter_voice,
         )

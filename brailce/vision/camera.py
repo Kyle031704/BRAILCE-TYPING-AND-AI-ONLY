@@ -328,17 +328,53 @@ class UsbWebcamDevice(CameraDevice):
     def _open_capture(self, dev: Any) -> Optional[Any]:
         if cv2 is None:
             return None
-        try:
-            target = int(dev) if str(dev).isdigit() else str(dev)
-            cap = cv2.VideoCapture(target, cv2.CAP_V4L2 if isinstance(target, str) or os.name != "nt" else cv2.CAP_ANY)
-            if cap is not None and cap.isOpened():
-                # Test whether it actually returns a valid non-blank image (skips metadata/ISP nodes)
-                ret, test_frame = cap.read()
-                if ret and test_frame is not None and test_frame.size > 0 and float(np.mean(test_frame)) > 0.5:
+        target = int(dev) if str(dev).isdigit() else str(dev)
+        
+        # Multiple backends depending on platform
+        if os.name == "nt":
+            backends = [getattr(cv2, "CAP_DSHOW", 700), getattr(cv2, "CAP_MSMF", 1400), cv2.CAP_ANY]
+        else:
+            backends = [getattr(cv2, "CAP_V4L2", 200), cv2.CAP_ANY]
+
+        for backend in backends:
+            cap = None
+            try:
+                cap = cv2.VideoCapture(target, backend)
+                if cap is None or not cap.isOpened():
+                    if cap is not None:
+                        try:
+                            cap.release()
+                        except Exception:
+                            pass
+                    continue
+
+                # Warm-up loop: discard initial frames / wait up to ~2s for valid exposed frame
+                start_time = time.time()
+                valid = False
+                for _ in range(15):
+                    ret, test_frame = cap.read()
+                    if ret and test_frame is not None and test_frame.size > 0:
+                        # Once sensor auto-exposes above dark noise floor
+                        if float(np.mean(test_frame)) > 0.5:
+                            valid = True
+                            break
+                    time.sleep(0.08)
+                    if time.time() - start_time > 2.0:
+                        break
+
+                if valid:
+                    logger.info("UsbWebcamDevice: Opened device %s via backend %s (warm-up OK)", target, backend)
                     return cap
+
                 cap.release()
-        except Exception:
-            pass
+            except Exception as exc:
+                if cap is not None:
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+                logger.debug("Failed opening device %s via backend %s: %s", target, backend, exc)
+
         return None
 
     def _init_camera(self) -> bool:
@@ -365,7 +401,9 @@ class UsbWebcamDevice(CameraDevice):
                 self._is_active = True
                 self.init_error = None
                 self._start_reader_thread()
-                logger.info("UsbWebcamDevice: Successfully opened USB camera on %s", dev)
+                w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                logger.info("UsbWebcamDevice: Successfully opened USB camera on %s (%dx%d @ %d fps)", dev, w, h, self.fps)
                 return True
 
         self._is_active = False
@@ -445,8 +483,44 @@ class UsbWebcamDevice(CameraDevice):
         raise CameraNotConnectedError("USB Camera stream lost")
 
     def capture_still(self) -> Optional[np.ndarray]:
-        """Capture high quality still frame, flushing stale queue buffer."""
+        """Capture high quality still frame at still_resolution (1920x1080) with autofocus handling and sharpest-of-N."""
+        if not self._is_active:
+            raise CameraNotConnectedError(self.init_error or "Camera not connected")
+
+        sw, sh = self.still_resolution
+        orig_w, orig_h = self.resolution
+        frames: List[np.ndarray] = []
+        if self._cap and self._cap.isOpened():
+            try:
+                self._cap.set(getattr(cv2, "CAP_PROP_FRAME_WIDTH", 3), sw)
+                self._cap.set(getattr(cv2, "CAP_PROP_FRAME_HEIGHT", 4), sh)
+                time.sleep(0.08)
+                for _ in range(3):
+                    self._cap.grab()
+                for _ in range(5):
+                    ret, f = self._cap.read()
+                    if ret and f is not None and f.size > 0:
+                        frames.append(f)
+                    time.sleep(0.02)
+            except Exception as exc:
+                logger.debug("UsbWebcamDevice still capture switch warning: %s", exc)
+            finally:
+                try:
+                    self._cap.set(getattr(cv2, "CAP_PROP_FRAME_WIDTH", 3), orig_w)
+                    self._cap.set(getattr(cv2, "CAP_PROP_FRAME_HEIGHT", 4), orig_h)
+                except Exception:
+                    pass
+
+        if frames:
+            return max(frames, key=lambda f: compute_sharpness(f))
+
         return self.capture_image()
+
+    def reconnect(self) -> bool:
+        """Attempt to re-initialize camera connection without crashing."""
+        self.close()
+        time.sleep(0.2)
+        return self._init_camera()
 
     def close(self) -> None:
         self._running = False

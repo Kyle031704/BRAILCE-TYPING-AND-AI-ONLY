@@ -26,6 +26,7 @@ import threading
 import wave
 from typing import Optional, List, Tuple, Any
 
+from brailce.i18n.fil_lexicon import apply_filipino_lexicon
 from brailce.speech.audio_device import AudioDeviceCoordinator
 from brailce.speech.audio_normalize import (
     DEFAULT_POST_SILENCE_MS,
@@ -39,7 +40,103 @@ from brailce.speech.base import SpeechEngine
 logger = logging.getLogger(__name__)
 
 
-def _find_filipino_audio_dir() -> str:
+def pitch_shift_pcm(samples: Any, semitones: float, sr: int = TARGET_SAMPLE_RATE) -> Any:
+    """
+    Fast, dependency-light phase-vocoder pitch shifter in pure numpy.
+    Raises pitch by semitones (+3 to +4 semitones) while preserving duration and formants.
+    """
+    if abs(semitones) < 0.05 or getattr(samples, "size", 0) < 512:
+        return samples
+    try:
+        import numpy as np
+
+        factor = 2.0 ** (semitones / 12.0)
+        target_len = samples.size
+        n_fft = 1024
+        hop = n_fft // 4
+        synth_hop = int(round(hop / factor))
+        if synth_hop < 1:
+            return samples
+
+        window = np.hanning(n_fft)
+        padded = np.pad(samples.astype(np.float64), (0, n_fft), mode="constant")
+        num_frames = samples.size // hop
+        if num_frames < 2:
+            return samples
+
+        frames = np.lib.stride_tricks.as_strided(
+            padded,
+            shape=(num_frames, n_fft),
+            strides=(padded.strides[0] * hop, padded.strides[0]),
+        )
+        stft = np.fft.rfft(frames * window, axis=1)
+
+        phase_adv = np.linspace(0, np.pi * 2 * hop, n_fft // 2 + 1)
+        out_stft = np.zeros_like(stft)
+        phase = np.angle(stft[0])
+        out_stft[0] = stft[0]
+
+        for i in range(1, num_frames):
+            mag = np.abs(stft[i])
+            dphase = np.angle(stft[i]) - np.angle(stft[i - 1]) - phase_adv
+            dphase = dphase - 2 * np.pi * np.round(dphase / (2 * np.pi))
+            freq = (phase_adv + dphase) / hop
+            phase += freq * synth_hop
+            out_stft[i] = mag * np.exp(1j * phase)
+
+        out_len = num_frames * synth_hop + n_fft
+        out_arr = np.zeros(out_len, dtype=np.float64)
+        win_sum = np.zeros(out_len, dtype=np.float64)
+        inv_frames = np.fft.irfft(out_stft, axis=1) * window
+
+        for i in range(num_frames):
+            st = i * synth_hop
+            out_arr[st : st + n_fft] += inv_frames[i]
+            win_sum[st : st + n_fft] += window ** 2
+
+        mask = win_sum > 1e-4
+        out_arr[mask] /= win_sum[mask]
+
+        x_old = np.linspace(0, 1, out_arr.size)
+        x_new = np.linspace(0, 1, target_len)
+        resampled = np.interp(x_new, x_old, out_arr)
+        return resampled
+    except Exception as exc:
+        logger.debug("pitch_shift_pcm error: %s", exc)
+        return samples
+
+
+def _pad_wav_with_silence(wav_path: str, pre_ms: int = 120, post_ms: int = 180) -> None:
+    """Prepend digital zero PCM silence and append post-silence to WAV file with gentle envelope."""
+    try:
+        import numpy as np
+
+        with wave.open(wav_path, "rb") as wf:
+            params = wf.getparams()
+            raw = wf.readframes(wf.getnframes())
+
+        if params.sampwidth == 2 and len(raw) >= 2:
+            arr = np.frombuffer(raw, dtype=np.int16).astype(np.float64)
+            # Gentle envelope on edges to eliminate click/pop
+            fade_len = min(int(params.framerate * 0.005), arr.size // 4)
+            if fade_len > 1:
+                fade_in = 0.5 * (1.0 - np.cos(np.linspace(0, np.pi, fade_len)))
+                fade_out = 0.5 * (1.0 + np.cos(np.linspace(0, np.pi, fade_len)))
+                arr[:fade_len] *= fade_in
+                arr[-fade_len:] *= fade_out
+            pcm = np.clip(np.round(arr), -32767, 32767).astype(np.int16).tobytes()
+        else:
+            pcm = raw
+
+        bytes_per_sample = params.sampwidth * params.nchannels
+        pre_silence = b"\x00" * bytes_per_sample * int(params.framerate * (pre_ms / 1000.0))
+        post_silence = b"\x00" * bytes_per_sample * int(params.framerate * (post_ms / 1000.0))
+
+        with wave.open(wav_path, "wb") as wf:
+            wf.setparams(params)
+            wf.writeframes(pre_silence + pcm + post_silence)
+    except Exception as exc:
+        logger.debug("Silence padding error: %s", exc)
     """Locate the pre-rendered Filipino audio cache directory."""
     local_dir = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "audio", "filipino")
@@ -68,23 +165,6 @@ def _find_filipino_sherpa_model_dir() -> Optional[str]:
         if os.path.isfile(model_path) and os.path.isfile(tokens_path):
             return d
     return None
-
-def _pad_wav_with_silence(wav_path: str, pre_ms: int = 250, post_ms: int = 350) -> None:
-    """Prepend 250ms pure digital zero PCM silence and append 350ms post-silence to WAV file."""
-    try:
-        with wave.open(wav_path, "rb") as wf:
-            params = wf.getparams()
-            frames = wf.readframes(wf.getnframes())
-
-        bytes_per_sample = params.sampwidth * params.nchannels
-        pre_silence = b"\x00" * bytes_per_sample * int(params.framerate * (pre_ms / 1000.0))
-        post_silence = b"\x00" * bytes_per_sample * int(params.framerate * (post_ms / 1000.0))
-
-        with wave.open(wav_path, "wb") as wf:
-            wf.setparams(params)
-            wf.writeframes(pre_silence + frames + post_silence)
-    except Exception as exc:
-        logger.debug("Silence padding error: %s", exc)
 
 
 FILIPINO_CHAR_FILENAMES = {
@@ -370,6 +450,7 @@ def tagalog_number(n: int) -> str:
 def normalize_for_sherpa_filipino(text: str) -> str:
     """
     Normalize text for sherpa-onnx Filipino VITS TTS:
+    - Applies Filipino pronunciation lexicon (loanwords, mode names, symbols).
     - Converts math operators: '+' -> 'dagdag', '=' -> 'ay', '-' -> 'bawas', etc.
     - Converts digits (0-999,999) into Tagalog number words (e.g. 7 -> pito, 14 -> labing-apat, 1000 -> isang libo).
     - Expands 'mga' -> 'manga' for natural phonetic realization.
@@ -379,7 +460,7 @@ def normalize_for_sherpa_filipino(text: str) -> str:
     if not text:
         return ""
 
-    s = text
+    s = apply_filipino_lexicon(text)
 
     # 1. Convert math operators / symbols
     s = s.replace("+", " dagdag ")
@@ -422,9 +503,15 @@ class FilipinoEngine:
     4. Fallback to concatenative / phonetic Piper synthesis if model.onnx is missing.
     """
 
-    def __init__(self, fallback_speech: Optional[SpeechEngine] = None, max_queue_size: int = 50) -> None:
+    def __init__(
+        self,
+        fallback_speech: Optional[SpeechEngine] = None,
+        max_queue_size: int = 50,
+        pitch_semitones: float = 3.5,
+    ) -> None:
         self.fallback_speech = fallback_speech
         self.letter_style = "english_names"
+        self.pitch_semitones = pitch_semitones
         self._sherpa_tts = None
         self._sherpa_initialized = False
         self._queue: queue.Queue[Optional[Tuple[str, Any]]] = queue.Queue(maxsize=max_queue_size)
@@ -584,9 +671,9 @@ class FilipinoEngine:
                 model=model_path,
                 tokens=tokens_path,
                 data_dir="",
-                noise_scale=0.667,
-                noise_scale_w=0.8,
-                length_scale=1.0,
+                noise_scale=0.333,
+                noise_scale_w=0.4,
+                length_scale=0.95,
             )
             model_config = sherpa_onnx.OfflineTtsModelConfig(
                 vits=vits_config,
@@ -610,8 +697,8 @@ class FilipinoEngine:
     def _synthesize_sherpa_filipino(self, text: str, out_wav_path: str) -> bool:
         """
         Synthesize Filipino text using sherpa-onnx OfflineTts (MMS-TTS tgl VITS),
-        split gently on sentence boundaries for natural pacing, then convert to
-        22050 Hz mono s16, RMS-normalized, with standard pre/post silence padding.
+        split gently on sentence boundaries for natural pacing, apply pitch shift (+3.5 st),
+        then convert to 22050 Hz mono s16, RMS-normalized, with standard pre/post silence padding.
         """
         tts = self._get_sherpa_tts()
         if not tts:
@@ -640,7 +727,9 @@ class FilipinoEngine:
                 norm_clause = normalize_for_sherpa_filipino(clause)
                 if not norm_clause:
                     continue
-                audio = tts.generate(norm_clause, sid=0, speed=0.95)
+                # For short single letter names, keep speed slightly crisper to prevent stretching
+                speed_val = 1.05 if len(norm_clause) <= 4 else 1.0
+                audio = tts.generate(norm_clause, sid=0, speed=speed_val)
                 if audio is None or len(audio.samples) == 0:
                     continue
                 src_sr = audio.sample_rate
@@ -659,6 +748,11 @@ class FilipinoEngine:
                 return False
 
             combined = np.concatenate(all_chunks)
+
+            # Apply pitch shift (+3.5 semitones for friendlier, lighter offline voice)
+            if getattr(self, "pitch_semitones", 0.0) != 0.0:
+                combined = pitch_shift_pcm(combined, self.pitch_semitones, src_sr)
+
             pcm_int16 = np.clip(np.round(combined), -32767, 32767).astype(np.int16)
 
             os.makedirs(os.path.dirname(os.path.abspath(out_wav_path)), exist_ok=True)

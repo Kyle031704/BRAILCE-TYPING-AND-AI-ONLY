@@ -37,10 +37,10 @@ DEFAULT_POST_SILENCE_MS = 180
 def trim_silence_pcm(
     samples: np.ndarray,
     sr: int = TARGET_SAMPLE_RATE,
-    threshold: float = 150.0,
-    keep_margin_ms: int = 20,
+    threshold: float = 80.0,
+    keep_margin_ms: int = 40,
 ) -> np.ndarray:
-    """Trim leading and trailing near-silence beyond keep_margin_ms."""
+    """Trim leading and trailing near-silence while safely preserving soft onsets and codas."""
     if samples.size == 0:
         return samples
     abs_s = np.abs(samples)
@@ -50,7 +50,17 @@ def trim_silence_pcm(
     margin = int(sr * (keep_margin_ms / 1000.0))
     start = max(0, int(above[0]) - margin)
     end = min(samples.size, int(above[-1]) + margin + 1)
-    return samples[start:end]
+    trimmed = samples[start:end].copy()
+
+    # Apply gentle 5ms cosine envelope to prevent pops without cutting onsets
+    fade_len = min(int(sr * 0.005), trimmed.size // 4)
+    if fade_len > 1:
+        fade_in = 0.5 * (1.0 - np.cos(np.linspace(0, np.pi, fade_len)))
+        fade_out = 0.5 * (1.0 + np.cos(np.linspace(0, np.pi, fade_len)))
+        trimmed[:fade_len] *= fade_in
+        trimmed[-fade_len:] *= fade_out
+
+    return trimmed
 
 
 def resample_mono_pcm(samples: np.ndarray, src_sr: int, dst_sr: int = TARGET_SAMPLE_RATE) -> np.ndarray:

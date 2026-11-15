@@ -91,6 +91,8 @@ class MathMode(BaseMode):
             return
 
         # 1. Number Indicator (#) in Math Mode
+        lang = self.state.language if self.state else "en"
+        from brailce.i18n.strings import get_string
         if character == "#":
             is_active = self.state.toggle_number_mode()
             dots_str = "Dots 3-4-5-6"
@@ -99,9 +101,9 @@ class MathMode(BaseMode):
             if self.app.display:
                 self.app.display.show_character("# (Number Sign)")
                 self.app.display.show_braille(unicode_char, dots_str, "○ ●\n○ ●\n● ●")
-                self.app.display.show_status("Number Sign: Keys A-J represent digits 1-0" if is_active else "Ready for math")
+                self.app.display.show_status(get_string("NUMBER_MODE_ON", lang) if is_active else get_string("MATH_READY", lang))
             if self.app.speech:
-                self.app.speech.speak("number sign")
+                self.app.speech.speak(get_string("NUMBER_SIGN", lang))
             return
 
         # 2. Translate A-J to 1-0 when number mode is active
@@ -111,9 +113,9 @@ class MathMode(BaseMode):
         if character not in MATH_VALID_CHARS:
             logger.warning("Character not permitted in Math Mode: %r", character)
             if self.app.display:
-                self.app.display.show_status("Numbers and operators only")
+                self.app.display.show_status(get_string("MATH_ONLY_NUMBERS", lang))
             if self.app.speech:
-                self.app.speech.speak("Numbers only")
+                self.app.speech.speak(get_string("MATH_ERR_NUMBERS_ONLY", lang))
             return
 
         # 1. Look up Braille mapping
@@ -154,28 +156,32 @@ class MathMode(BaseMode):
     def _handle_backspace(self) -> None:
         """Remove last character silently without clicks, beeps, or vocal announcements."""
         removed = self.state.backspace_math()
+        lang = self.state.language if self.state else "en"
+        from brailce.i18n.strings import get_string
         if self.app.display:
             if removed:
                 self.app.display.show_character("Backspace")
                 self.app.display.show_text_buffer(self.state.math_buffer)
             else:
-                self.app.display.show_status("Buffer empty")
+                self.app.display.show_status(get_string("BUFFER_EMPTY", lang))
 
         if self.app.speech and self.app.config.get("speech", "speak_control_events", default=False):
-            self.app.speech.speak("backspace")
+            self.app.speech.speak(get_string("BUFFER_EMPTY", lang) if not removed else "backspace")
 
         logger.info("MathMode: BACKSPACE (removed: %r)", removed)
 
     def _handle_clear(self) -> None:
         """Clear the math buffer."""
+        lang = self.state.language if self.state else "en"
+        from brailce.i18n.strings import get_string
         self.state.clear_math_buffer()
         if self.app.display:
-            self.app.display.show_character("Cleared")
+            self.app.display.show_character(get_string("CLEARED", lang))
             self.app.display.show_text_buffer("")
-            self.app.display.show_status("Math buffer cleared")
+            self.app.display.show_status(get_string("MATH_CLEARED", lang))
 
         if self.app.speech and self.app.config.get("speech", "speak_control_events", default=False):
-            self.app.speech.speak("cleared")
+            self.app.speech.speak(get_string("CLEARED", lang))
 
         logger.info("MathMode: CLEAR")
 
@@ -186,7 +192,7 @@ class MathMode(BaseMode):
         lang = self.state.language
         expr = self.state.get_math_query()
         if not expr:
-            empty_msg = "Walang laman ang math buffer." if lang == "fil" else "Math buffer is empty"
+            empty_msg = get_string("MATH_EMPTY_BUFFER", lang)
             if self.app.display:
                 self.app.display.show_status(empty_msg)
             if self.app.speech:
@@ -225,7 +231,7 @@ class MathMode(BaseMode):
             logger.info("MathMode: SOLVED '%s' (%s) -> %s", solution.expression, lang, solution.result_str)
 
         else:
-            err_msg = solution.error_message or (get_string("MATH_ERR_MALFORMED", lang) if lang == "fil" else "Could not solve")
+            err_msg = solution.error_message or get_string("MATH_ERR_MALFORMED", lang)
             if self.app.display:
                 self.app.display.show_error(err_msg)
             if self.app.speech:
@@ -234,11 +240,13 @@ class MathMode(BaseMode):
 
     def on_enter(self) -> None:
         """Called when Math Mode becomes active."""
+        lang = self.state.language if self.state else "en"
+        from brailce.i18n.strings import get_string
         self.state.clear_math_buffer()
         if self.app.display:
             self.app.display.clear()
             self.app.display.show_mode(self.mode_type)
-            self.app.display.show_status("Ready for math")
+            self.app.display.show_status(get_string("MATH_READY", lang))
             self.app.display.show_text_buffer("")
         logger.info("Entered Math Mode.")
 

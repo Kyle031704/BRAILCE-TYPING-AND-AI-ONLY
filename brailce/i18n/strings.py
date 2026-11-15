@@ -39,7 +39,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
     },
     "VOLUME_ANNOUNCE": {
         "en": "Volume {vol} percent",
-        "fil": "Bolyum {vol} porsyento",
+        "fil": "Lakas ng tunog {vol} porsyento",
     },
     "BUFFER_EMPTY": {
         "en": "Buffer empty",
@@ -47,7 +47,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
     },
     "CLEARED": {
         "en": "Cleared",
-        "fil": "Binura",
+        "fil": "Nabura",
     },
     "NUMBER_SIGN": {
         "en": "number sign",
@@ -65,45 +65,113 @@ STRINGS: Dict[str, Dict[str, str]] = {
     # ---- Mode Names & Introductions (LCD + Spoken) ----
     "MODE_NAME_FREE_INPUT": {
         "en": "Free Input Mode",
-        "fil": "Malayang Pagpindot",
+        "fil": "Malayang Paglalagay",
     },
     "MODE_NAME_MATH": {
         "en": "Math Mode",
-        "fil": "Modong Matematika",
+        "fil": "Matematika",
     },
     "MODE_NAME_AI": {
         "en": "AI Assistant Mode",
-        "fil": "Modong Katulong na AI",
+        "fil": "Katulong na AI",
     },
     "MODE_NAME_SCANNER": {
         "en": "Scanner Mode",
-        "fil": "Modong Panuri ng Braille",
+        "fil": "Pagbasa ng Braille",
     },
     "MODE_INTRO_FREE_INPUT": {
         "en": "Free Input Mode. Type letters and words.",
-        "fil": "Malayang Pagpindot. Pindutin ang mga titik at salita.",
+        "fil": "Malayang Paglalagay. Maglagay ng mga titik at salita.",
     },
     "MODE_INTRO_MATH": {
         "en": "Math Mode. Type numbers and operators.",
-        "fil": "Modong Matematika. Pindutin ang mga numero at operasyon.",
+        "fil": "Matematika. Maglagay ng mga numero at operasyon.",
     },
     "MODE_INTRO_AI": {
         "en": "AI Assistant Mode. Type your question and press Enter.",
-        "fil": "Modong Katulong na AI. Pindutin ang iyong tanong, tapos pindutin ang Enter.",
+        "fil": "Katulong na AI. I-type ang iyong tanong, tapos pindutin ang Enter.",
     },
     "MODE_INTRO_SCANNER": {
         "en": "Scanner Mode. Hold a Braille page and press Enter to scan.",
-        "fil": "Modong Panuri ng Braille. Itapat ang pahina, tapos pindutin ang Enter upang basahin.",
+        "fil": "Pagbasa ng Braille. Itapat ang pahina sa kamera, tapos pindutin ang Enter.",
     },
 
     # ---- Math Mode & Arithmetic Card Labels ----
     "MATH_READY": {
         "en": "Ready for math",
-        "fil": "Handa para sa matematika",
+        "fil": "Handa sa matematika",
+    },
+    "MATH_STATUS_READY": {
+        "en": "Ready for math input (0-9, +, -)",
+        "fil": "Handa sa matematika (0-9, +, -)",
     },
     "MATH_CLEARED": {
         "en": "Math buffer cleared",
-        "fil": "Binura ang math buffer",
+        "fil": "Nabura ang mga numero",
+    },
+    "MATH_ONLY_NUMBERS": {
+        "en": "Numbers and operators only",
+        "fil": "Mga numero at operasyon lamang",
+    },
+    "MATH_ERR_NUMBERS_ONLY": {
+        "en": "Numbers only",
+        "fil": "Mga numero lamang",
+    },
+    "FREE_INPUT_STATUS": {
+        "en": "Letters: {count} | Press Space for word, Enter for sentence",
+        "fil": "Mga titik: {count} | Space para sa salita, Enter para sa pangungusap",
+    },
+    "AI_STATUS_PROMPT": {
+        "en": "Length: {count} characters | Press ENTER to ask",
+        "fil": "Haba: {count} titik | Pindutin ang ENTER para magtanong",
+    },
+    "AI_STATUS_COMPLETE": {
+        "en": "Answer complete. Press any key to type or TAB.",
+        "fil": "Tapos na ang sagot. Pindutin ang anumang pindutan.",
+    },
+    "AI_THINKING_INDICATOR": {
+        "en": "AI IS THINKING...",
+        "fil": "NAG-IISIP ANG AI...",
+    },
+    "AI_THINKING_SUBTEXT": {
+        "en": "Running offline neural model on Raspberry Pi 5...",
+        "fil": "Tumatakbo ang offline neural model sa Raspberry Pi 5...",
+    },
+    "SCANNER_INSTRUCTION_BOX": {
+        "en": "Place embossed Braille page inside camera box",
+        "fil": "Ilagay ang pahina ng Braille sa loob ng kahon ng kamera",
+    },
+    "SCANNER_STATUS_POSITION": {
+        "en": "Position Braille inside box | Press Enter to Scan",
+        "fil": "Itapat ang Braille sa kahon | Pindutin ang Enter para basahin",
+    },
+    "SCANNER_PRESS_ENTER_TO_CAPTURE": {
+        "en": "• Press ENTER to capture and translate page",
+        "fil": "• Pindutin ang ENTER para kunan at basahin ang pahina",
+    },
+    "SCANNER_TARGET_CENTERED": {
+        "en": "Target  : [ + ] Centered on Braille Page",
+        "fil": "Puntirya: [ + ] Nakatapat sa Pahina ng Braille",
+    },
+    "SCANNER_FRAME_SAVED": {
+        "en": "Camera Live Feed [640x480] | Frame saved: camera_preview.jpg",
+        "fil": "Live Feed ng Kamera [640x480] | Naitabi: camera_preview.jpg",
+    },
+    "FREE_INPUT_CONSOLE_INSTRUCTION": {
+        "en": "Type on dedicated Braille keys for letter and word voice feedback.",
+        "fil": "Pumindot sa mga Braille key para marinig ang titik at salita.",
+    },
+    "MATH_CONSOLE_INSTRUCTION": {
+        "en": "Type math problem (e.g. 5+3) and press Enter for step-by-step counting solution.",
+        "fil": "Maglagay ng problema sa matematika (hal. 5+3) at pindutin ang Enter.",
+    },
+    "AI_CONSOLE_INSTRUCTION": {
+        "en": "Type your question using Braille keys and press Enter to ask AI.",
+        "fil": "I-type ang iyong tanong gamit ang Braille keys at pindutin ang Enter.",
+    },
+    "SCANNER_CONSOLE_INSTRUCTION": {
+        "en": "Aim camera at Braille paper and press Enter to scan.",
+        "fil": "Itapat ang kamera sa papel na may Braille at pindutin ang Enter.",
     },
     "MATH_CARD_TITLE": {
         "en": "MATH SOLUTION (GRADE 1)",

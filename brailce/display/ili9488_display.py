@@ -18,6 +18,7 @@ from typing import Optional, Any
 
 from brailce.core.events import AppMode
 from brailce.display.base import DisplayDevice
+from brailce.i18n.strings import get_string, get_mode_name
 
 logger = logging.getLogger(__name__)
 
@@ -384,7 +385,7 @@ class ILI9488Display(DisplayDevice):
         self._draw.text((30, 135), "Examples:  2 + 3   |   7 - 4   |   5 + 5", fill=(148, 163, 184))
         self._draw.text((30, 180), "• Press ENTER to calculate and hear counting steps", fill=(203, 213, 225))
         self._draw.text((30, 210), "• Press CLEAR to reset equation buffer", fill=(148, 163, 184))
-        self.show_status("Ready for math input (0-9, +, -)")
+        self.show_status(get_string("MATH_STATUS_READY", self._language))
 
     # -------------------------------------------------------------------------
     # Free Input Mode
@@ -463,7 +464,7 @@ class ILI9488Display(DisplayDevice):
             cx = min(440, 25 + len(lines[-1]) * 8)
             self._draw.rectangle([(cx, y - 18), (cx + 5, y - 4)], fill=(251, 191, 36))
 
-        self.show_status(f"Letters: {len(text)} | Press Space for word, Enter for sentence")
+        self.show_status(get_string("FREE_INPUT_STATUS", self._language, count=len(text)))
         self._flush_to_hardware()
 
     # -------------------------------------------------------------------------
@@ -502,7 +503,7 @@ class ILI9488Display(DisplayDevice):
         self._draw.text((25, 216), "• Press ENTER to ask the AI", fill=(203, 213, 225))
         self._draw.text((25, 240), "• Press TAB to cycle modes | BACKSPACE to delete", fill=(148, 163, 184))
 
-        self.show_status(f"Length: {len(query)} characters | Press ENTER to ask")
+        self.show_status(get_string("AI_STATUS_PROMPT", self._language, count=len(query)))
         self._flush_to_hardware()
 
     def show_ai_processing(self, query: Optional[str] = None) -> None:
@@ -523,13 +524,13 @@ class ILI9488Display(DisplayDevice):
 
         # Processing card
         self._draw.rectangle([(15, 140), (465, 276)], fill=(24, 16, 48), outline=(168, 85, 247), width=2)
-        self._draw.text((30, 160), "⚡ AI IS THINKING...", fill=(251, 191, 36))
-        self._draw.text((30, 192), "Running offline neural model on Raspberry Pi 5...", fill=(226, 232, 240))
+        self._draw.text((30, 160), "⚡ " + get_string("AI_THINKING_INDICATOR", self._language), fill=(251, 191, 36))
+        self._draw.text((30, 192), get_string("AI_THINKING_SUBTEXT", self._language), fill=(226, 232, 240))
         # Gradient progress bar
         self._draw.rectangle([(30, 226), (450, 244)], fill=(15, 23, 42), outline=(139, 92, 246))
         self._draw.rectangle([(30, 226), (360, 244)], fill=(168, 85, 247))
 
-        self.show_status("AI is generating your response...")
+        self.show_status(get_string("AI_THINKING", self._language))
         self._flush_to_hardware()
 
     def show_ai_response(self, response: str, query: Optional[str] = None) -> None:
@@ -559,7 +560,7 @@ class ILI9488Display(DisplayDevice):
             self._draw.text((25, y), line, fill=(255, 255, 255))
             y += 20
 
-        self.show_status("Answer complete. Press any key to type or TAB.")
+        self.show_status(get_string("AI_STATUS_COMPLETE", self._language))
         self._flush_to_hardware()
 
     # -------------------------------------------------------------------------
@@ -626,63 +627,101 @@ class ILI9488Display(DisplayDevice):
         mx, my = 35, 68
         self._draw.rectangle([(mx, my), (self._width - mx, 260)], outline=(16, 185, 129), width=2)
         self._draw.text((mx + 15, my + 15), "OPTICAL BRAILLE SCANNER (OBR)", fill=(52, 211, 153))
-        self._draw.text((mx + 15, my + 45), "Place embossed Braille page inside camera box", fill=(255, 255, 255))
-        self._draw.text((mx + 15, my + 78), "• Press ENTER to capture and translate page", fill=(251, 191, 36))
+        self._draw.text((mx + 15, my + 45), get_string("SCANNER_INSTRUCTION_BOX", self._language), fill=(255, 255, 255))
+        self._draw.text((mx + 15, my + 78), get_string("SCANNER_PRESS_ENTER_TO_CAPTURE", self._language), fill=(251, 191, 36))
         self._draw.text((mx + 15, my + 108), "• Press TAB to cycle through modes", fill=(148, 163, 184))
 
-        st = status or "Position Braille inside box | Press Enter to Scan"
+        st = status or get_string("SCANNER_STATUS_POSITION", self._language)
         self.show_status(st)
         self._flush_to_hardware()
 
     def show_camera_preview(
         self, frame: Any, status: Optional[str] = None
     ) -> None:
-        """Render camera preview with clean framing and battery header."""
+        """Render camera preview with clean letterboxed framing and frame-skipping if busy."""
         if frame is None or not self._image:
             return
+
+        # Frame-skip if hardware SPI or display is currently busy to never starve audio/input threads
+        if not self._display_lock.acquire(blocking=False):
+            return
+
         try:
             import cv2
             from PIL import Image, ImageDraw
 
-            resized = cv2.resize(frame, (self._width, self._height))
+            # Letterboxed scaling: keep aspect ratio without stretching
+            fh, fw = frame.shape[:2]
+            usable_w = self._width
+            usable_h = self._height - 47 - 35  # beneath header, above status bar
+            scale = min(usable_w / float(fw), usable_h / float(fh))
+            nw = max(1, int(fw * scale))
+            nh = max(1, int(fh * scale))
+
+            resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
             rgb_frame = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-            preview_img = Image.fromarray(rgb_frame)
+            preview_img = Image.new("RGB", (self._width, self._height), color=(11, 15, 25))
+            frame_pil = Image.fromarray(rgb_frame)
+
+            # Paste centered
+            ox = (self._width - nw) // 2
+            oy = 47 + (usable_h - nh) // 2
+            preview_img.paste(frame_pil, (ox, oy))
+
             draw = ImageDraw.Draw(preview_img)
 
-            # Viewfinder frame: Emerald corners
-            mx, my = int(self._width * 0.12), int(self._height * 0.15)
-            bx, by = self._width - mx, self._height - my
-            draw.rectangle([(mx, my), (bx, by)], outline=(16, 185, 129), width=3)
+            # Viewfinder guide box: Emerald corners
+            g_mx, g_my = int(self._width * 0.12), int(self._height * 0.16)
+            g_bx, g_by = self._width - g_mx, self._height - int(self._height * 0.14)
+            draw.rectangle([(g_mx, g_my), (g_bx, g_by)], outline=(16, 185, 129), width=2)
             # Center crosshair
-            cx, cy = self._width // 2, self._height // 2
+            cx, cy = self._width // 2, (g_my + g_by) // 2
             draw.line([(cx - 15, cy), (cx + 15, cy)], fill=(16, 185, 129), width=2)
             draw.line([(cx, cy - 15), (cx, cy + 15)], fill=(16, 185, 129), width=2)
 
-            with self._display_lock:
-                self._image = preview_img
-                self._draw = draw
-                # Header with battery widget
-                self._draw_header(AppMode.SCANNER)
+            self._image = preview_img
+            self._draw = draw
+            # Header with battery widget
+            self._draw_header(AppMode.SCANNER)
 
-                # Detection Pill Badge (centered right under header)
-                if status and "detected" in status.lower():
-                    badge_w = 320
-                    bx0 = (self._width - badge_w) // 2
-                    if "no " in status.lower() or "not" in status.lower():
-                        draw.rectangle([(bx0, 52), (bx0 + badge_w, 76)], fill=(153, 27, 27), outline=(239, 68, 68), width=1)
-                        draw.text((bx0 + 10, 56), status[:46], fill=(255, 255, 255))
-                    else:
-                        draw.rectangle([(bx0, 52), (bx0 + badge_w, 76)], fill=(6, 95, 70), outline=(52, 211, 153), width=1)
-                        draw.text((bx0 + 10, 56), status[:46], fill=(255, 255, 255))
+            # Detection Pill Badge (centered right under header)
+            if status and "detected" in status.lower():
+                badge_w = 320
+                bx0 = (self._width - badge_w) // 2
+                if "no " in status.lower() or "not" in status.lower():
+                    draw.rectangle([(bx0, 50), (bx0 + badge_w, 74)], fill=(153, 27, 27), outline=(239, 68, 68), width=1)
+                    draw.text((bx0 + 10, 54), status[:46], fill=(255, 255, 255))
+                else:
+                    draw.rectangle([(bx0, 50), (bx0 + badge_w, 74)], fill=(6, 95, 70), outline=(52, 211, 153), width=1)
+                    draw.text((bx0 + 10, 54), status[:46], fill=(255, 255, 255))
 
-                # Bottom Status Bar (solid fill to prevent text ghosting)
-                st = status if status else "Position Braille inside box | Press Enter to Scan"
-                draw.rectangle([(0, self._height - 34), (self._width, self._height)], fill=(3, 7, 18))
-                draw.line([(0, self._height - 34), (self._width, self._height - 34)], fill=(31, 41, 55), width=1)
-                draw.text((15, self._height - 24), f"● {st[:55]}", fill=(56, 189, 248))
+            # Bottom Status Bar (solid fill to prevent text ghosting)
+            st = status if status else get_string("SCANNER_STATUS_POSITION", self._language)
+            draw.rectangle([(0, self._height - 34), (self._width, self._height)], fill=(3, 7, 18))
+            draw.line([(0, self._height - 34), (self._width, self._height - 34)], fill=(31, 41, 55), width=1)
+            draw.text((15, self._height - 24), f"● {st[:55]}", fill=(56, 189, 248))
 
-            self._flush_to_hardware()
+            # Direct SPI / framebuffer flush (must be done while holding lock)
+            if self._device is not None:
+                self._device.display(self._image)
+            elif self._fb_file and self._image:
+                try:
+                    import numpy as np
+                    arr = np.array(self._image)
+                    if self._bpp == 16:
+                        r5 = (arr[:, :, 0] >> 3).astype(np.uint16)
+                        g6 = (arr[:, :, 1] >> 2).astype(np.uint16)
+                        b5 = (arr[:, :, 2] >> 3).astype(np.uint16)
+                        rgb565 = (r5 << 11) | (g6 << 5) | b5
+                        self._fb_file.seek(0)
+                        self._fb_file.write(rgb565.tobytes())
+                        self._fb_file.flush()
+                except Exception:
+                    pass
         except Exception as exc:
+            logger.debug("Error updating ILI9488 camera preview: %s", exc)
+        finally:
+            self._display_lock.release()
             logger.debug("Error updating ILI9488 camera preview: %s", exc)
 
     def close_camera_preview(self) -> None:

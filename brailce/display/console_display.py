@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 from brailce.core.events import AppMode
 from brailce.display.base import DisplayDevice
+from brailce.i18n.strings import get_string, get_mode_name
 
 logger = logging.getLogger(__name__)
 
@@ -82,15 +83,17 @@ class ConsoleDisplay(DisplayDevice):
 
     def show_mode(self, mode: AppMode) -> None:
         self._current_mode = mode
-        mode_name = mode.display_name()
+        mode_name = get_mode_name(mode, language=self._language)
         c = self._c()
         
-        instructions = {
-            AppMode.FREE_INPUT: "Type on dedicated Braille keys for letter and word voice feedback.",
-            AppMode.MATH: "Type math problem (e.g. 5+3) and press Enter for step-by-step counting solution.",
-            AppMode.AI_ASSISTANT: "Type your question using Braille keys and press Enter to ask AI.",
-            AppMode.SCANNER: "Aim camera at Braille paper and press Enter to scan."
-        }.get(mode, "")
+        instruction_keys = {
+            AppMode.FREE_INPUT: "FREE_INPUT_CONSOLE_INSTRUCTION",
+            AppMode.MATH: "MATH_CONSOLE_INSTRUCTION",
+            AppMode.AI_ASSISTANT: "AI_CONSOLE_INSTRUCTION",
+            AppMode.SCANNER: "SCANNER_CONSOLE_INSTRUCTION",
+        }
+        inst_key = instruction_keys.get(mode, "FREE_INPUT_CONSOLE_INSTRUCTION")
+        instructions = get_string(inst_key, language=self._language)
 
         print(f"{c.CYAN}{c.BOLD}[MODE]{c.RESET} {c.GOLD}{mode_name}{c.RESET}")
         print(f"{c.CYAN}╭────────────────────────────────────────────────────────────╮")
@@ -188,10 +191,12 @@ class ConsoleDisplay(DisplayDevice):
         if now - self._last_cam_print > 1.5:
             self._last_cam_print = now
             c = self._c()
-            st = status if status else "Position Braille inside box | Press Enter to Scan"
+            st = status if status else get_string("SCANNER_STATUS_POSITION", language=self._language)
+            frame_saved_str = get_string("SCANNER_FRAME_SAVED", language=self._language)
+            target_str = get_string("SCANNER_TARGET_CENTERED", language=self._language)
             print(f"\n{c.CYAN}{c.BOLD}╭── [ CAMERA VIEWFINDER: SCANNER MODE ] ─────────────────────╮{c.RESET}")
-            print(f"│  {c.EMERALD}● Camera Live Feed [640x480]{c.CYAN} | Frame saved: camera_preview.jpg │")
-            print(f"│  Target  : [ + ] Centered on Braille Page                  │")
+            print(f"│  {c.EMERALD}● {frame_saved_str[:54]:<54}{c.CYAN} │")
+            print(f"│  {target_str[:56]:<56}│")
             print(f"│  {c.GOLD}{st:<56}{c.CYAN}  │")
             print(f"{c.CYAN}{c.BOLD}╰────────────────────────────────────────────────────────────╯{c.RESET}")
 
