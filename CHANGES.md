@@ -129,4 +129,36 @@ Run these checks directly on the Raspberry Pi 5 hardware after deployment:
 - Added Windows PowerShell deployment script `tools/deploy_to_pi.ps1`.
 - Added Raspberry Pi automated update script `tools/pi_update.sh`.
 
+---
+
+## 4. Camera, Scanner Mode & ILI9488 LCD Preview Hardening (Round 4)
+
+### ILI9488 Camera Preview Crash & Rendering Pipeline
+- **Root causes:**
+  1. `Thread-7 (_preview_loop)` crashed with `UnboundLocalError: cannot access local variable 'exc' where it is not associated with a value` because `logger.debug(..., exc)` was placed in the `finally:` block where `exc` was unassigned when no exception occurred in `try:`.
+  2. Frame ingestion lacked type-tolerance for 2D grayscale arrays, float32 arrays, and PIL Images, and float coordinates caused geometry calculation failures.
+- **Fix:**
+  - Removed dangling `exc` reference from the `finally:` block, strictly restricting it to `except Exception as exc:`.
+  - Added robust conversion for PIL Images, 2D grayscale numpy arrays, 3-channel BGR/RGB, 4-channel BGRA, and float-normalized frames with automatic uint8 scaling.
+  - Converted all canvas coordinates, letterbox offsets, guide boxes, and status badges to explicit integer tuples `(int(x), int(y))` and replaced deprecated Pillow font calls with modern `textbbox` safe rendering.
+  - Added non-blocking lock acquisition (`self._display_lock.acquire(blocking=False)`) for hardware SPI flushes to drop intermediate frames when hardware is busy rather than starving audio/input threads.
+
+### Scanner Mode & Detection Thread Bulletproofing
+- **Root causes:**
+  - `_preview_loop` and `_detection_worker` had uncaught exceptions inside their `while` loops that killed worker threads on frame glitches. The preview loop sleep was set to 0.18s (~5.5 FPS).
+- **Fix:**
+  - Wrapped `_preview_loop` and `_detection_worker` iterations in dedicated `try / except Exception as exc:` blocks to log warnings and continue streaming at >= 10 FPS (0.06s sleep target).
+  - Ensured `on_enter` reliably restarts threads if dead, and `on_exit` cleanly joins daemon threads and closes preview state.
+  - Throttled disk snapshots in `ConsoleDisplay.show_camera_preview` to 1 Hz to prevent I/O thrashing.
+
+### USB Webcam Initialization, Warm-Up & High-Res Still Capture
+- **Root causes:**
+  - USB webcams output 5–20 initial black/empty frames before auto-exposure settles. A single-frame rejection caused false camera-not-connected errors.
+- **Fix:**
+  - Implemented a 30-frame / 2.0-second warm-up loop in `UsbWebcamDevice._open_capture` requiring both brightness and variance thresholds (`mean > 1.0` and `std > 0.5`) before accepting the stream.
+  - Added multi-backend fallback (`V4L2`, `CAP_ANY` on Linux; `DSHOW`, `MSMF`, `CAP_ANY` on Windows) and automatic reconnection retry on transient frame drops.
+  - Implemented high-resolution still capture with Laplacian variance (`cv2.Laplacian(gray, cv2.CV_64F).var()`) selecting the sharpest frame among burst captures.
+  - Added CLAHE contrast enhancement fallback in `OBREngine.process_image` for low-contrast embossed paper.
+
+
 

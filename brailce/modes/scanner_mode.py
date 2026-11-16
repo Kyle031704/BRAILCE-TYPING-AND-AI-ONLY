@@ -147,18 +147,18 @@ class ScannerMode(BaseMode):
         neg_streak = 0
 
         while self._preview_running:
-            if self._is_scanning or self._is_reading or not getattr(self.app, "obr", None):
-                time.sleep(self.PRESENCE_POLL_S)
-                continue
-
-            with self._frame_lock:
-                frame = self._latest_frame
-
-            if frame is None:
-                time.sleep(self.PRESENCE_POLL_S)
-                continue
-
             try:
+                if self._is_scanning or self._is_reading or not getattr(self.app, "obr", None):
+                    time.sleep(self.PRESENCE_POLL_S)
+                    continue
+
+                with self._frame_lock:
+                    frame = self._latest_frame
+
+                if frame is None:
+                    time.sleep(self.PRESENCE_POLL_S)
+                    continue
+
                 detected = bool(self.app.obr.detect_braille_presence(frame))
                 if detected:
                     pos_streak += 1
@@ -191,41 +191,47 @@ class ScannerMode(BaseMode):
     def _preview_loop(self) -> None:
         """Live camera viewfinder loop maintaining a rolling buffer of sharpest frames."""
         while self._preview_running:
-            cam = getattr(self.app, "camera", None)
-            if not self._is_scanning and cam is not None:
-                if hasattr(cam, "is_available") and not cam.is_available():
-                    self._report_camera_missing()
-                    time.sleep(0.6)
-                    continue
+            try:
+                cam = getattr(self.app, "camera", None)
+                if not self._is_scanning and cam is not None:
+                    if hasattr(cam, "is_available") and not cam.is_available():
+                        self._report_camera_missing()
+                        time.sleep(0.5)
+                        continue
 
-                try:
-                    frame = cam.capture_image()
-                except CameraNotConnectedError:
-                    self._report_camera_missing()
-                    time.sleep(0.6)
-                    continue
-                except Exception as exc:
-                    logger.debug("Preview capture error: %s", exc)
-                    frame = None
+                    try:
+                        frame = cam.capture_image()
+                    except CameraNotConnectedError:
+                        self._report_camera_missing()
+                        time.sleep(0.5)
+                        continue
+                    except Exception as exc:
+                        logger.debug("Preview capture error: %s", exc)
+                        frame = None
 
-                if frame is not None:
-                    self._camera_error_reported = False
-                    sharpness = compute_sharpness(frame)
-                    with self._frame_lock:
-                        self._latest_frame = frame
-                        self._sharp_frames.append((sharpness, frame))
+                    if frame is not None:
+                        self._camera_error_reported = False
+                        sharpness = compute_sharpness(frame)
+                        with self._frame_lock:
+                            self._latest_frame = frame
+                            self._sharp_frames.append((sharpness, frame))
 
-                    if getattr(self.app, "display", None) and not self._is_reading:
-                        lang = self._lang()
-                        if self.scanned_text:
-                            status = self.scanned_text
-                        elif self._braille_detected is True:
-                            status = get_string("SCANNER_BRAILLE_DETECTED", lang)
-                        else:
-                            status = get_string("SCANNER_READY", lang)
-                        self.app.display.show_camera_preview(frame, status=status)
+                        if getattr(self.app, "display", None) and not self._is_reading:
+                            lang = self._lang()
+                            if self.scanned_text:
+                                status = self.scanned_text
+                            elif self._braille_detected is True:
+                                status = get_string("SCANNER_BRAILLE_DETECTED", lang)
+                            else:
+                                status = get_string("SCANNER_READY", lang)
+                            try:
+                                self.app.display.show_camera_preview(frame, status=status)
+                            except Exception as disp_exc:
+                                logger.debug("Display show_camera_preview error: %s", disp_exc)
+            except Exception as loop_exc:
+                logger.warning("Preview loop iteration warning: %s", loop_exc)
 
-            time.sleep(0.18)
+            time.sleep(0.06)
 
     def _capture_best_still(self) -> Optional[Any]:
         """Acquire full-res still (sharpest of N) or sharpest buffered preview frame."""
@@ -440,10 +446,12 @@ class ScannerMode(BaseMode):
                 self.app.display.show_status(ready)
 
         self._preview_running = True
-        self._preview_thread = threading.Thread(target=self._preview_loop, daemon=True)
-        self._preview_thread.start()
-        self._detector_thread = threading.Thread(target=self._detection_worker, daemon=True)
-        self._detector_thread.start()
+        if self._preview_thread is None or not self._preview_thread.is_alive():
+            self._preview_thread = threading.Thread(target=self._preview_loop, daemon=True, name="scanner-preview")
+            self._preview_thread.start()
+        if self._detector_thread is None or not self._detector_thread.is_alive():
+            self._detector_thread = threading.Thread(target=self._detection_worker, daemon=True, name="scanner-detector")
+            self._detector_thread.start()
 
     def on_exit(self) -> None:
         logger.info("Exited Scanner Mode.")
@@ -453,5 +461,9 @@ class ScannerMode(BaseMode):
         self._braille_detected = None
         self._latest_frame = None
         self._sharp_frames.clear()
+        if self._preview_thread and self._preview_thread.is_alive():
+            self._preview_thread.join(timeout=0.2)
+        if self._detector_thread and self._detector_thread.is_alive():
+            self._detector_thread.join(timeout=0.2)
         if getattr(self.app, "display", None):
             self.app.display.close_camera_preview()

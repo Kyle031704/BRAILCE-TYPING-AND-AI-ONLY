@@ -182,33 +182,41 @@ class ConsoleDisplay(DisplayDevice):
         """Render live camera viewfinder and save snapshot."""
         if frame is None:
             return
-        
-        # 1. Save frame snapshot for easy viewing on laptop
-        try:
-            import cv2
-            cv2.imwrite("camera_preview.jpg", frame)
-        except Exception:
-            pass
+
+        now = time.time()
+
+        # 1. Save frame snapshot periodically for viewing on dev PC (throttled to 1 Hz)
+        if now - getattr(self, "_last_cam_save", 0.0) > 1.0:
+            self._last_cam_save = now
+            try:
+                import cv2
+                if hasattr(frame, "save"):
+                    frame.save("camera_preview.jpg")
+                else:
+                    cv2.imwrite("camera_preview.jpg", frame)
+            except Exception:
+                pass
 
         # 2. Render live terminal viewfinder card every 1.5 seconds
-        now = time.time()
         if now - self._last_cam_print > 1.5:
             self._last_cam_print = now
             c = self._c()
-            st = status if status else get_string("SCANNER_STATUS_POSITION", language=self._language)
-            frame_saved_str = get_string("SCANNER_FRAME_SAVED", language=self._language)
-            target_str = get_string("SCANNER_TARGET_CENTERED", language=self._language)
+            lang = getattr(self, "_language", "en") or "en"
+            st = status if status else get_string("SCANNER_STATUS_POSITION", language=lang)
+            frame_saved_str = get_string("SCANNER_FRAME_SAVED", language=lang)
+            target_str = get_string("SCANNER_TARGET_CENTERED", language=lang)
             print(f"\n{c.CYAN}{c.BOLD}╭── [ CAMERA VIEWFINDER: SCANNER MODE ] ─────────────────────╮{c.RESET}")
             print(f"│  {c.EMERALD}● {frame_saved_str[:54]:<54}{c.CYAN} │")
             print(f"│  {target_str[:56]:<56}│")
             print(f"│  {c.GOLD}{st:<56}{c.CYAN}  │")
             print(f"{c.CYAN}{c.BOLD}╰────────────────────────────────────────────────────────────╯{c.RESET}")
 
-        # 3. If local desktop window is supported, display OpenCV window
+        # 3. If local desktop window is supported and GUI available, display OpenCV window
         try:
             import cv2
-            cv2.imshow("Brailce - Camera Viewfinder", frame)
-            cv2.waitKey(1)
+            if hasattr(frame, "shape"):
+                cv2.imshow("Brailce - Camera Viewfinder", frame)
+                cv2.waitKey(1)
         except Exception:
             pass
 

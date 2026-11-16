@@ -351,19 +351,31 @@ class UsbWebcamDevice(CameraDevice):
                 # Warm-up loop: discard initial frames / wait up to ~2s for valid exposed frame
                 start_time = time.time()
                 valid = False
-                for _ in range(15):
+                for _ in range(30):
                     ret, test_frame = cap.read()
                     if ret and test_frame is not None and test_frame.size > 0:
+                        m = float(np.mean(test_frame))
+                        s = float(np.std(test_frame))
                         # Once sensor auto-exposes above dark noise floor
-                        if float(np.mean(test_frame)) > 0.5:
+                        if m > 1.0 and s > 0.5:
                             valid = True
                             break
-                    time.sleep(0.08)
+                    time.sleep(0.06)
                     if time.time() - start_time > 2.0:
                         break
 
                 if valid:
-                    logger.info("UsbWebcamDevice: Opened device %s via backend %s (warm-up OK)", target, backend)
+                    backend_name = "V4L2" if backend == getattr(cv2, "CAP_V4L2", -1) else (
+                        "DSHOW" if backend == getattr(cv2, "CAP_DSHOW", -1) else (
+                            "MSMF" if backend == getattr(cv2, "CAP_MSMF", -1) else str(backend)
+                        )
+                    )
+                    act_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    act_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    logger.info(
+                        "UsbWebcamDevice: Opened device %s via backend %s (%dx%d, warm-up OK)",
+                        target, backend_name, act_w, act_h
+                    )
                     return cap
 
                 cap.release()
@@ -477,10 +489,27 @@ class UsbWebcamDevice(CameraDevice):
             for _ in range(2):  # Flush any stale buffer frame
                 self._cap.grab()
             ret, frame = self._cap.read()
-            if ret and frame is not None:
+            if ret and frame is not None and frame.size > 0:
                 return frame
 
+        # Automatic reconnect retry if USB read temporarily returns False
+        logger.warning("USB webcam read returned False; attempting automatic reconnection...")
+        if self.reconnect():
+            with self._lock:
+                if self._latest_frame is not None:
+                    return self._latest_frame.copy()
+            if self._cap and self._cap.isOpened():
+                for _ in range(2):
+                    self._cap.grab()
+                ret, frame = self._cap.read()
+                if ret and frame is not None and frame.size > 0:
+                    return frame
+
         raise CameraNotConnectedError("USB Camera stream lost")
+
+    def capture_frame(self) -> Optional[np.ndarray]:
+        """Alias for capture_image."""
+        return self.capture_image()
 
     def capture_still(self) -> Optional[np.ndarray]:
         """Capture high quality still frame at still_resolution (1920x1080) with autofocus handling and sharpest-of-N."""
@@ -512,7 +541,16 @@ class UsbWebcamDevice(CameraDevice):
                     pass
 
         if frames:
-            return max(frames, key=lambda f: compute_sharpness(f))
+            def frame_sharpness(f: np.ndarray) -> float:
+                if cv2 is not None:
+                    try:
+                        g = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) if len(f.shape) == 3 else f
+                        return float(cv2.Laplacian(g, cv2.CV_64F).var())
+                    except Exception:
+                        pass
+                return compute_sharpness(f)
+
+            return max(frames, key=frame_sharpness)
 
         return self.capture_image()
 

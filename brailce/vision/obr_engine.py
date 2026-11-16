@@ -795,7 +795,12 @@ class OBREngine:
         if not quality_ok:
             return {"readable": False, "reason": reason, "text": "", "cells": [], "lap_var": lap_var}
 
+        enhanced = self.enhance_contrast(image)
         dots, dot_diam = self.detect_dots(image)
+        if len(dots) < 4:
+            dots_enh, diam_enh = self.detect_dots(enhanced)
+            if len(dots_enh) > len(dots):
+                dots, dot_diam = dots_enh, diam_enh
         h, w = image.shape[:2]
 
         if len(dots) >= 2:

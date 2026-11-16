@@ -638,44 +638,90 @@ class ILI9488Display(DisplayDevice):
     def show_camera_preview(
         self, frame: Any, status: Optional[str] = None
     ) -> None:
-        """Render camera preview with clean letterboxed framing and frame-skipping if busy."""
-        if frame is None or not self._image:
+        """Render camera preview with clean letterboxed framing and non-blocking frame-skipping."""
+        if frame is None:
             return
+
+        # Initialize canvas if not yet created
+        if self._image is None:
+            from PIL import Image, ImageDraw
+            self._image = Image.new("RGB", (self._width, self._height), color=(11, 15, 25))
+            self._draw = ImageDraw.Draw(self._image)
 
         # Frame-skip if hardware SPI or display is currently busy to never starve audio/input threads
         if not self._display_lock.acquire(blocking=False):
             return
 
         try:
-            import cv2
             from PIL import Image, ImageDraw
 
-            # Letterboxed scaling: keep aspect ratio without stretching
-            fh, fw = frame.shape[:2]
-            usable_w = self._width
-            usable_h = self._height - 47 - 35  # beneath header, above status bar
-            scale = min(usable_w / float(fw), usable_h / float(fh))
-            nw = max(1, int(fw * scale))
-            nh = max(1, int(fh * scale))
+            # 1. Normalise input frame into an RGB PIL Image
+            if isinstance(frame, Image.Image):
+                frame_pil = frame.convert("RGB")
+                fw, fh = frame_pil.size
+            else:
+                import numpy as np
+                arr = np.asarray(frame)
+                if arr.size == 0:
+                    return
 
-            resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
-            rgb_frame = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+                # Convert float / int arrays to uint8
+                if arr.dtype != np.uint8:
+                    if np.issubdtype(arr.dtype, np.floating):
+                        max_val = float(np.nanmax(arr)) if arr.size else 1.0
+                        if max_val <= 1.0:
+                            arr = np.clip(arr * 255.0, 0, 255).astype(np.uint8)
+                        else:
+                            arr = np.clip(arr, 0, 255).astype(np.uint8)
+                    else:
+                        arr = np.clip(arr, 0, 255).astype(np.uint8)
+
+                if arr.ndim == 2:
+                    # 2D Grayscale -> RGB
+                    arr_rgb = np.stack([arr, arr, arr], axis=-1)
+                elif arr.ndim == 3:
+                    channels = arr.shape[2]
+                    if channels == 1:
+                        arr_rgb = np.repeat(arr, 3, axis=-1)
+                    elif channels == 4:
+                        # BGRA -> RGB
+                        arr_rgb = arr[:, :, :3][:, :, ::-1]
+                    elif channels == 3:
+                        # Standard OpenCV BGR -> RGB
+                        arr_rgb = arr[:, :, ::-1]
+                    else:
+                        arr_rgb = arr[:, :, :3]
+                else:
+                    return
+
+                frame_pil = Image.fromarray(arr_rgb)
+                fw, fh = frame_pil.size
+
+            # 2. Letterboxed scaling: keep aspect ratio without stretching
+            usable_w = int(self._width)
+            usable_h = max(10, int(self._height - 47 - 35))  # beneath header, above status bar
+            scale = min(float(usable_w) / max(1.0, float(fw)), float(usable_h) / max(1.0, float(fh)))
+            nw = max(1, int(round(fw * scale)))
+            nh = max(1, int(round(fh * scale)))
+
+            resized_pil = frame_pil.resize(
+                (nw, nh),
+                Image.Resampling.BILINEAR if hasattr(Image, "Resampling") else Image.BILINEAR,
+            )
+
             preview_img = Image.new("RGB", (self._width, self._height), color=(11, 15, 25))
-            frame_pil = Image.fromarray(rgb_frame)
-
-            # Paste centered
-            ox = (self._width - nw) // 2
-            oy = 47 + (usable_h - nh) // 2
-            preview_img.paste(frame_pil, (ox, oy))
+            ox = int((self._width - nw) // 2)
+            oy = int(47 + (usable_h - nh) // 2)
+            preview_img.paste(resized_pil, (ox, oy))
 
             draw = ImageDraw.Draw(preview_img)
 
             # Viewfinder guide box: Emerald corners
             g_mx, g_my = int(self._width * 0.12), int(self._height * 0.16)
-            g_bx, g_by = self._width - g_mx, self._height - int(self._height * 0.14)
+            g_bx, g_by = int(self._width - g_mx), int(self._height - int(self._height * 0.14))
             draw.rectangle([(g_mx, g_my), (g_bx, g_by)], outline=(16, 185, 129), width=2)
             # Center crosshair
-            cx, cy = self._width // 2, (g_my + g_by) // 2
+            cx, cy = int(self._width // 2), int((g_my + g_by) // 2)
             draw.line([(cx - 15, cy), (cx + 15, cy)], fill=(16, 185, 129), width=2)
             draw.line([(cx, cy - 15), (cx, cy + 15)], fill=(16, 185, 129), width=2)
 
@@ -685,21 +731,24 @@ class ILI9488Display(DisplayDevice):
             self._draw_header(AppMode.SCANNER)
 
             # Detection Pill Badge (centered right under header)
-            if status and "detected" in status.lower():
+            if status and "detected" in str(status).lower():
+                status_str = str(status)[:46]
                 badge_w = 320
-                bx0 = (self._width - badge_w) // 2
-                if "no " in status.lower() or "not" in status.lower():
+                bx0 = int((self._width - badge_w) // 2)
+                f_small = self._font_small or None
+                if "no " in status_str.lower() or "not" in status_str.lower():
                     draw.rectangle([(bx0, 50), (bx0 + badge_w, 74)], fill=(153, 27, 27), outline=(239, 68, 68), width=1)
-                    draw.text((bx0 + 10, 54), status[:46], fill=(255, 255, 255))
+                    draw.text((bx0 + 10, 54), status_str, fill=(255, 255, 255), font=f_small)
                 else:
                     draw.rectangle([(bx0, 50), (bx0 + badge_w, 74)], fill=(6, 95, 70), outline=(52, 211, 153), width=1)
-                    draw.text((bx0 + 10, 54), status[:46], fill=(255, 255, 255))
+                    draw.text((bx0 + 10, 54), status_str, fill=(255, 255, 255), font=f_small)
 
             # Bottom Status Bar (solid fill to prevent text ghosting)
-            st = status if status else get_string("SCANNER_STATUS_POSITION", self._language)
+            lang = getattr(self, "_language", "en") or "en"
+            st = str(status) if status else get_string("SCANNER_STATUS_POSITION", lang)
             draw.rectangle([(0, self._height - 34), (self._width, self._height)], fill=(3, 7, 18))
             draw.line([(0, self._height - 34), (self._width, self._height - 34)], fill=(31, 41, 55), width=1)
-            draw.text((15, self._height - 24), f"● {st[:55]}", fill=(56, 189, 248))
+            draw.text((15, self._height - 24), f"● {st[:55]}", fill=(56, 189, 248), font=self._font_small or None)
 
             # Direct SPI / framebuffer flush (must be done while holding lock)
             if self._device is not None:
@@ -722,7 +771,6 @@ class ILI9488Display(DisplayDevice):
             logger.debug("Error updating ILI9488 camera preview: %s", exc)
         finally:
             self._display_lock.release()
-            logger.debug("Error updating ILI9488 camera preview: %s", exc)
 
     def close_camera_preview(self) -> None:
         self.clear()
