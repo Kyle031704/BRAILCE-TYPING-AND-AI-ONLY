@@ -49,6 +49,7 @@ class ScannerMode(BaseMode):
         super().__init__(app)
         self.scanned_text: Optional[str] = None
         self._last_result: Optional[Dict[str, Any]] = None
+        self._scanned_frame: Optional[Any] = None
         self._is_scanning: bool = False
         self._is_reading: bool = False
         self._preview_running: bool = False
@@ -116,6 +117,7 @@ class ScannerMode(BaseMode):
         lang = self._lang()
         self.scanned_text = None
         self._last_result = None
+        self._scanned_frame = None
         self._braille_detected = None
         if getattr(self.app, "display", None):
             ready = get_string("SCANNER_READY", lang)
@@ -284,6 +286,7 @@ class ScannerMode(BaseMode):
                 return
 
             image = self._capture_best_still()
+            self._scanned_frame = image
             if image is None:
                 if not self._camera_error_reported:
                     msg = get_string("SCANNER_NO_BRAILLE", lang)
@@ -356,6 +359,18 @@ class ScannerMode(BaseMode):
         display = getattr(self.app, "display", None)
         cells: List[Dict[str, Any]] = list(result.get("cells") or [])
 
+        # Build overlay entries for all cells
+        overlays: List[Dict[str, Any]] = []
+        for c in cells:
+            ch_c = str(c.get("char", "")).strip()
+            box_c = c.get("bbox") or c.get("box")
+            if box_c is None and "center" in c and "pitch" in c:
+                cx, cy = c["center"]
+                p = c["pitch"]
+                box_c = (cx - p * 0.7, cy - p * 1.1, p * 1.4, p * 2.2)
+            if box_c and ch_c:
+                overlays.append({"char": ch_c, "bbox": box_c, "active": False, "cell": c})
+
         try:
             if not cells:
                 text = str(result.get("text", "")).strip()
@@ -403,6 +418,13 @@ class ScannerMode(BaseMode):
                         display.show_character(ch)
                     if dots_str and hasattr(display, "show_braille"):
                         display.show_braille(ch, dots_str, "")
+                    if self._scanned_frame is not None and hasattr(display, "show_camera_preview") and overlays:
+                        for ov in overlays:
+                            ov["active"] = (ov.get("cell") is cell)
+                        try:
+                            display.show_camera_preview(self._scanned_frame, status=self.scanned_text or ch, overlays=overlays)
+                        except Exception:
+                            pass
 
                 if kind == "unknown" or ch == "?":
                     cur_has_unknown = True
@@ -419,6 +441,13 @@ class ScannerMode(BaseMode):
 
             if cur_word and not self._stop_readout_event.is_set():
                 self._speak_completed_word(cur_word, cur_has_unknown)
+                if self._scanned_frame is not None and hasattr(display, "show_camera_preview") and overlays:
+                    for ov in overlays:
+                        ov["active"] = False
+                    try:
+                        display.show_camera_preview(self._scanned_frame, status=self.scanned_text, overlays=overlays)
+                    except Exception:
+                        pass
         finally:
             self._is_reading = False
             if display and self.scanned_text and not self._stop_readout_event.is_set():

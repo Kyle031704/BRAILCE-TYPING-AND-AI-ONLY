@@ -142,3 +142,60 @@ def test_obr_decoding_test_images():
             assert isinstance(res, dict)
             assert "readable" in res
             assert "reason" in res
+
+
+def test_detect_braille_presence_tightened():
+    """Verify detect_braille_presence rejects blank/noise and accepts regular Braille grids."""
+    engine = OBREngine()
+
+    # 1. Blank frame -> False
+    blank = np.full((320, 320, 3), 200, dtype=np.uint8)
+    assert engine.detect_braille_presence(blank) is False
+
+    # 2. Random noise frame -> False
+    rng = np.random.default_rng(123)
+    noise = rng.integers(60, 210, size=(320, 320, 3), dtype=np.uint8)
+    assert engine.detect_braille_presence(noise) is False
+
+    # 3. Only 2 random dots -> False (requires >= 4 dots in regular grid)
+    two_dots = np.full((320, 320, 3), 220, dtype=np.uint8)
+    # Draw two dark dots
+    import cv2
+    cv2.circle(two_dots, (50, 50), 4, (30, 30, 30), -1)
+    cv2.circle(two_dots, (200, 150), 4, (30, 30, 30), -1)
+    assert engine.detect_braille_presence(two_dots) is False
+
+    # 4. Regular 2x3 Braille grid pattern (e.g. letters 'b' and 'a') -> True
+    grid_img = np.full((320, 320, 3), 220, dtype=np.uint8)
+    # Cell 1: dots 1, 2 (B) at x=100, y=100 and y=120
+    cv2.circle(grid_img, (100, 100), 4, (20, 20, 20), -1)
+    cv2.circle(grid_img, (100, 120), 4, (20, 20, 20), -1)
+    # Cell 2: dot 1 (A) at x=140, y=100
+    cv2.circle(grid_img, (140, 100), 4, (20, 20, 20), -1)
+    # Additional dot to form a clear 4-dot pattern (dot 2 of second letter or dot 3)
+    cv2.circle(grid_img, (140, 120), 4, (20, 20, 20), -1)
+    # Soft blur to simulate optical dot dome
+    grid_img = cv2.GaussianBlur(grid_img, (3, 3), 0.8)
+    assert engine.detect_braille_presence(grid_img) is True
+
+
+def test_ili9488_and_console_overlays():
+    """Verify camera preview overlays render without error on ILI9488 and ConsoleDisplay."""
+    from brailce.display.console_display import ConsoleDisplay
+
+    overlays = [
+        {"char": "B", "bbox": (10, 20, 30, 40), "active": True},
+        {"char": "A", "bbox": (50, 20, 30, 40), "active": False},
+    ]
+    frame = np.full((240, 320, 3), 150, dtype=np.uint8)
+
+    # Test ILI9488
+    ili = ILI9488Display(width=480, height=320)
+    ili.initialize()
+    ili.show_camera_preview(frame, status="Testing Overlays", overlays=overlays)
+    assert ili._image is not None
+
+    # Test ConsoleDisplay
+    console = ConsoleDisplay()
+    console.show_camera_preview(frame, status="Testing Console Overlays", overlays=overlays)
+

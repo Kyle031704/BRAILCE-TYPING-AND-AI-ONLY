@@ -177,9 +177,12 @@ class ConsoleDisplay(DisplayDevice):
         print(f"{c.CYAN}{c.BOLD}══════════════════════════════════════════════{c.RESET}\n")
 
     def show_camera_preview(
-        self, frame: Any, status: Optional[str] = None
+        self,
+        frame: Any,
+        status: Optional[str] = None,
+        overlays: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
-        """Render live camera viewfinder and save snapshot."""
+        """Render live camera viewfinder, draw character overlays, and save snapshot."""
         if frame is None:
             return
 
@@ -197,8 +200,9 @@ class ConsoleDisplay(DisplayDevice):
             except Exception:
                 pass
 
-        # 2. Render live terminal viewfinder card every 1.5 seconds
-        if now - self._last_cam_print > 1.5:
+        # 2. Render live terminal viewfinder card every 1.5 seconds or when overlays update
+        has_overlays = bool(overlays)
+        if (now - self._last_cam_print > 1.5) or has_overlays:
             self._last_cam_print = now
             c = self._c()
             lang = getattr(self, "_language", "en") or "en"
@@ -208,6 +212,16 @@ class ConsoleDisplay(DisplayDevice):
             print(f"\n{c.CYAN}{c.BOLD}╭── [ CAMERA VIEWFINDER: SCANNER MODE ] ─────────────────────╮{c.RESET}")
             print(f"│  {c.EMERALD}● {frame_saved_str[:54]:<54}{c.CYAN} │")
             print(f"│  {target_str[:56]:<56}│")
+            if overlays:
+                overlay_chars = []
+                for ov in overlays:
+                    ch = ov.get("char", "")
+                    if ov.get("active"):
+                        overlay_chars.append(f"{c.YELLOW}{c.BOLD}[{ch}]{c.RESET}{c.CYAN}")
+                    else:
+                        overlay_chars.append(ch)
+                overlay_line = f"Decoded: {' '.join(overlay_chars)}"
+                print(f"│  {overlay_line[:56]:<56}│")
             print(f"│  {c.GOLD}{st:<56}{c.CYAN}  │")
             print(f"{c.CYAN}{c.BOLD}╰────────────────────────────────────────────────────────────╯{c.RESET}")
 

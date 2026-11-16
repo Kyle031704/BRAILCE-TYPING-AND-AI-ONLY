@@ -759,8 +759,12 @@ class OBREngine:
 
     def detect_braille_presence(self, image: np.ndarray) -> bool:
         """
-        Lightweight presence check (~5-10 Hz on Pi 5) using the multi-scale dot detector
-        at reduced resolution without running YOLO inference.
+        Robust presence check (~5-10 Hz on Pi 5) verifying:
+        1. Basic lighting & paper background quality.
+        2. Minimum dot count (>= 4 dots).
+        3. Diameter consistency (variance/std of dot radius <= 0.65 of median).
+        4. Regular nearest-neighbor pitch ratio (1.6 <= pitch/diam <= 5.5).
+        5. Grid regularity: at least 40% of dots share a neighbor within consistent pitch.
         """
         if image is None or cv2 is None or image.size == 0:
             return False
@@ -777,8 +781,50 @@ class OBREngine:
             else:
                 small = image
 
-            dots, _ = self.detect_dots(small)
-            return len(dots) >= 3
+            dots, dot_diam = self.detect_dots(small)
+            if len(dots) < 4:
+                return False
+
+            # Reject static / noise frames where thousands of spurious dots are found
+            sh, sw = small.shape[:2]
+            max_expected_dots = int((sw * sh) / 350.0)
+            if len(dots) > max(120, max_expected_dots):
+                return False
+
+            # Check dot diameter consistency
+            diams = np.array([d["d"] for d in dots], dtype=np.float64)
+            med_d = float(np.median(diams))
+            if med_d < 2.5:
+                return False
+            std_d = float(np.std(diams))
+            if (std_d / max(1e-3, med_d)) > 0.65:
+                return False
+
+            # Check nearest-neighbor grid pitch regularity
+            pts = np.array([[d["x"], d["y"]] for d in dots], dtype=np.float64)
+            n = len(pts)
+            nn_dists = []
+            for i in range(n):
+                diffs = pts - pts[i]
+                dists = np.hypot(diffs[:, 0], diffs[:, 1])
+                valid = dists[dists > 3.0]
+                if len(valid):
+                    nn_dists.append(float(np.min(valid)))
+
+            if len(nn_dists) < 4:
+                return False
+
+            med_pitch = float(np.median(nn_dists))
+            pitch_ratio = med_pitch / max(1.0, med_d)
+            if not (1.6 <= pitch_ratio <= 5.5):
+                return False
+
+            # Grid consistency: at least 40% of dots within +/- 40% of median pitch
+            regular_count = sum(1 for d in nn_dists if 0.60 * med_pitch <= d <= 1.40 * med_pitch)
+            if (regular_count / len(nn_dists)) < 0.40:
+                return False
+
+            return True
         except Exception as exc:
             logger.debug("detect_braille_presence error: %s", exc)
             return False

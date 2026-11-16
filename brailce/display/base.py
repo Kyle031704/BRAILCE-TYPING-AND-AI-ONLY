@@ -72,7 +72,10 @@ class DisplayDevice(abc.ABC):
         """Clear all display content."""
 
     def show_camera_preview(
-        self, frame: Any, status: Optional[str] = None
+        self,
+        frame: Any,
+        status: Optional[str] = None,
+        overlays: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """
         Display a live camera viewfinder/preview frame.

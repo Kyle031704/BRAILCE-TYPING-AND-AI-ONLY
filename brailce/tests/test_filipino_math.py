@@ -190,7 +190,7 @@ class TestFilipinoMathLCDAndSpeechParity:
             expanded = normalize_for_sherpa_filipino(phrase)
             for tok in expanded.split():
                 clean = re.sub(r"[^a-z0-9\-']", "", tok.lower())
-                if not clean:
+                if not clean or not any(c.isalnum() for c in clean):
                     continue
                 if get_filipino_word_path(clean) is None:
                     missing.append(clean)

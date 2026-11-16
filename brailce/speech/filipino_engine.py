@@ -655,28 +655,54 @@ class FilipinoEngine:
         os.makedirs(cache_dir, exist_ok=True)
         norm_key = normalize_for_sherpa_filipino(trimmed) or trimmed.lower()
 
-        # 2. Check if a pre-cached AI offline answer exists
+        # 2. Check pre-rendered named UI files (whole phrases, mode intros, scanner messages)
+        named_aliases = {
+            "sinusuri ang pahina ng braille": "scanning_fil.wav",
+            "walang nakitang braille": "no_braille_fil.wav",
+            "walang nakitang braille ayusin ang posisyon ng kamera": "no_braille_fil.wav",
+            "nakitang braille pindutin ang enter upang basahin": "braille_detected_fil.wav",
+            "nag-iisip, mangyaring maghintay": "thinking_fil.wav",
+            "nag-iisip mangyaring maghintay": "thinking_fil.wav",
+            "nag iisip mangyaring maghintay": "thinking_fil.wav",
+            "wikang filipino": "switched_fil.wav",
+            "malayang paglalagay mag-type ng mga titik at salita": "mode_free_input.wav",
+            "matematika mag-type ng mga numero at operasyon": "mode_math.wav",
+            "katulong na ai i-type ang iyong tanong pagkatapos ay pindutin ang enter": "mode_ai.wav",
+            "pagbasa ng braille ilagay ang pahina ng braille sa tapat ng kamera pagkatapos ay pindutin ang enter": "mode_scanner.wav",
+        }
+        clean_key = re.sub(r"[^\w\s]", "", trimmed.lower()).strip()
+        matched_named = named_aliases.get(clean_key) or named_aliases.get(norm_key)
+        if matched_named:
+            named_p = os.path.join(cache_dir, matched_named)
+            if os.path.isfile(named_p) and os.path.getsize(named_p) > 1000:
+                logger.info("FilipinoEngine: Playing pre-rendered named phrase (%s)", named_p)
+                return AudioDeviceCoordinator.play_wav_file(named_p, owner="filipino", timeout=30.0)
+
+        # 3. Check if a pre-cached AI offline answer exists
         slug_key = re.sub(r"[^a-z0-9]", "_", norm_key).strip("_")
         ai_path = os.path.join(cache_dir, f"ai_{slug_key}.wav")
         if os.path.isfile(ai_path) and os.path.getsize(ai_path) > 1000:
             logger.info("FilipinoEngine: Playing pre-cached AI answer (%s)", ai_path)
             return AudioDeviceCoordinator.play_wav_file(ai_path, owner="filipino", timeout=30.0)
 
-        # 3. Hash cache for full sentences / math explanations / AI replies
-        h = hashlib.md5(norm_key.encode("utf-8")).hexdigest()
-        cached_sentence = os.path.join(cache_dir, f"sentence_{h}.wav")
-        if os.path.isfile(cached_sentence) and os.path.getsize(cached_sentence) > 1000:
-            logger.info("FilipinoEngine: Playing hash-cached sentence (%s)", cached_sentence)
-            return AudioDeviceCoordinator.play_wav_file(cached_sentence, owner="filipino", timeout=30.0)
-
-        # 4. Word-by-word concatenation of bank WAVs with natural prosody pauses
-        if self._play_offline_concatenated_sentence(trimmed, cached_sentence):
-            return AudioDeviceCoordinator.play_wav_file(cached_sentence, owner="filipino", timeout=30.0)
-
-        # 5. Live offline fallback synthesis via sherpa-onnx MMS-TTS tgl VITS
-        if self.synthesize_to_wav(trimmed, cached_sentence):
+        # 4. Hash cache for full sentences / math explanations / AI replies
+        for candidate_key in (norm_key, trimmed.strip().lower()):
+            h = hashlib.md5(candidate_key.encode("utf-8")).hexdigest()
+            cached_sentence = os.path.join(cache_dir, f"sentence_{h}.wav")
             if os.path.isfile(cached_sentence) and os.path.getsize(cached_sentence) > 1000:
+                logger.info("FilipinoEngine: Playing hash-cached sentence (%s)", cached_sentence)
                 return AudioDeviceCoordinator.play_wav_file(cached_sentence, owner="filipino", timeout=30.0)
+
+        # 5. Live whole-sentence offline synthesis (prefer single utterance over choppy concatenation)
+        h_main = hashlib.md5(norm_key.encode("utf-8")).hexdigest()
+        target_wav = os.path.join(cache_dir, f"sentence_{h_main}.wav")
+        if self.synthesize_to_wav(trimmed, target_wav):
+            if os.path.isfile(target_wav) and os.path.getsize(target_wav) > 1000:
+                return AudioDeviceCoordinator.play_wav_file(target_wav, owner="filipino", timeout=30.0)
+
+        # 6. Fallback: seamless word concatenation with tight 15ms crossfades (not choppy 80ms)
+        if self._play_offline_concatenated_sentence(trimmed, target_wav):
+            return AudioDeviceCoordinator.play_wav_file(target_wav, owner="filipino", timeout=30.0)
 
         logger.warning("FilipinoEngine: Unable to synthesize offline Filipino speech for %r", trimmed)
         return False
@@ -830,9 +856,9 @@ class FilipinoEngine:
             return False
 
         framerate = TARGET_SAMPLE_RATE
-        gap_word = b"\x00\x00" * int(framerate * 0.080)
-        gap_comma = b"\x00\x00" * int(framerate * 0.250)
-        gap_period = b"\x00\x00" * int(framerate * 0.400)
+        gap_word = b"\x00\x00" * int(framerate * 0.015)
+        gap_comma = b"\x00\x00" * int(framerate * 0.150)
+        gap_period = b"\x00\x00" * int(framerate * 0.250)
 
         combined_pcm = bytearray()
         import numpy as np

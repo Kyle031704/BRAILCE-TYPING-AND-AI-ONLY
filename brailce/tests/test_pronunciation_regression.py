@@ -235,3 +235,45 @@ class TestPronunciationConsistency:
                     if os.path.exists(p):
                         os.remove(p)
 
+
+class TestFilipinoPronunciationRegression:
+    """Part 1 regression tests: Filipino pronunciation, 'kita', letter names, and female voice profile."""
+
+    def test_filipino_kita_lexicon_and_word_bank(self) -> None:
+        """Verify 'kita' and related forms are preserved in lexicon and exist in the word bank."""
+        from brailce.i18n.fil_lexicon import apply_filipino_lexicon
+        from brailce.speech.filipino_engine import get_filipino_word_path, FILIPINO_AUDIO_DIR
+
+        # 1. Lexicon preservation
+        for w in ("kita", "nakita", "nakitang", "makita"):
+            spoken = apply_filipino_lexicon(w)
+            assert spoken.lower() == w.lower(), f"Lexicon corrupted {w} -> {spoken}"
+
+        # 2. Word bank audio exists
+        kita_wav = get_filipino_word_path("kita")
+        assert kita_wav is not None and os.path.isfile(kita_wav), "word_kita.wav is missing"
+        assert os.path.getsize(kita_wav) > 1000, "word_kita.wav is too small"
+
+        for variant in ("nakita", "nakitang", "makita"):
+            v_p = os.path.join(FILIPINO_AUDIO_DIR, f"word_{variant}.wav")
+            assert os.path.isfile(v_p), f"Missing {variant} audio file"
+
+    def test_filipino_characters_female_pitch_and_quality(self) -> None:
+        """Verify character keystroke files use female Blessica voice without raspiness or low F0."""
+        from brailce.speech.filipino_engine import FILIPINO_AUDIO_DIR
+        from tools.audit_filipino_gender import estimate_f0_autocorr
+
+        for char in ("A", "B", "C", "K", "M", "S", "T"):
+            char_p = os.path.join(FILIPINO_AUDIO_DIR, f"char_{char}.wav")
+            assert os.path.isfile(char_p), f"Missing {char_p}"
+
+            with wave.open(char_p, "rb") as wf:
+                sr = wf.getframerate()
+                frames = wf.readframes(wf.getnframes())
+            data = np.frombuffer(frames, dtype=np.int16)
+
+            f0, _ = estimate_f0_autocorr(data, sr=sr)
+            assert f0 is not None, f"char_{char}.wav has no detectable voiced pitch"
+            assert f0 >= 160.0, f"char_{char}.wav F0={f0:.1f} Hz is too low (expected female Blessica > 160 Hz)"
+
+

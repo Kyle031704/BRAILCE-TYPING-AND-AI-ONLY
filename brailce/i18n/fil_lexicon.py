@@ -34,6 +34,10 @@ FILIPINO_PRONUNCIATION_LEXICON: Dict[str, str] = {
     "type": "tayp",
     "ok": "okay",
     "camera": "kamera",
+    "kita": "kita",
+    "nakita": "nakita",
+    "nakitang": "nakitang",
+    "makita": "makita",
 }
 
 # Approved technical / universal terms permitted in Filipino strings

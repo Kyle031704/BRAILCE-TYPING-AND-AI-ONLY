@@ -181,7 +181,7 @@ class MathMode(BaseMode):
             self.app.display.show_status(get_string("MATH_CLEARED", lang))
 
         if self.app.speech and self.app.config.get("speech", "speak_control_events", default=False):
-            self.app.speech.speak(get_string("CLEARED", lang))
+            self.app.speech.speak(get_string("CLEARED", lang).lower())
 
         logger.info("MathMode: CLEAR")
 
@@ -192,9 +192,10 @@ class MathMode(BaseMode):
         lang = self.state.language
         expr = self.state.get_math_query()
         if not expr:
+            status_msg = "Math buffer is empty" if lang == "en" else get_string("BUFFER_EMPTY", lang)
             empty_msg = get_string("MATH_EMPTY_BUFFER", lang)
             if self.app.display:
-                self.app.display.show_status(empty_msg)
+                self.app.display.show_status(status_msg)
             if self.app.speech:
                 self.app.speech.speak(empty_msg)
             return

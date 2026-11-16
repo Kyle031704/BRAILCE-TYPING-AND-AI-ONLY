@@ -636,9 +636,12 @@ class ILI9488Display(DisplayDevice):
         self._flush_to_hardware()
 
     def show_camera_preview(
-        self, frame: Any, status: Optional[str] = None
+        self,
+        frame: Any,
+        status: Optional[str] = None,
+        overlays: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
-        """Render camera preview with clean letterboxed framing and non-blocking frame-skipping."""
+        """Render camera preview with clean letterboxed framing, decoded cell overlays, and non-blocking frame-skipping."""
         if frame is None:
             return
 
@@ -724,6 +727,39 @@ class ILI9488Display(DisplayDevice):
             cx, cy = int(self._width // 2), int((g_my + g_by) // 2)
             draw.line([(cx - 15, cy), (cx + 15, cy)], fill=(16, 185, 129), width=2)
             draw.line([(cx, cy - 15), (cx, cy + 15)], fill=(16, 185, 129), width=2)
+
+            # Decoded Braille cell letter overlays
+            if overlays:
+                font_ov = self._font_medium or self._font_small
+                for ov in overlays:
+                    ch = str(ov.get("char", "")).strip()
+                    if not ch:
+                        continue
+                    active = bool(ov.get("active", False))
+                    raw_bbox = ov.get("bbox")
+                    if raw_bbox and len(raw_bbox) == 4:
+                        if raw_bbox[2] > raw_bbox[0] and raw_bbox[3] > raw_bbox[1]:
+                            bx1, by1, bx2, by2 = raw_bbox
+                        else:
+                            bx1, by1 = raw_bbox[0], raw_bbox[1]
+                            bx2, by2 = bx1 + raw_bbox[2], by1 + raw_bbox[3]
+                        # Scale to letterboxed preview coordinates
+                        sx1 = int(ox + bx1 * scale)
+                        sy1 = int(oy + by1 * scale)
+                        sx2 = int(ox + bx2 * scale)
+                        sy2 = int(oy + by2 * scale)
+
+                        box_color = (250, 204, 21) if active else (16, 185, 129)
+                        draw.rectangle([(sx1, sy1), (sx2, sy2)], outline=box_color, width=2 if active else 1)
+
+                        # Letter badge placed directly above the Braille cell
+                        tw, th = 18, 18
+                        badge_x = int((sx1 + sx2 - tw) // 2)
+                        badge_y = max(48, sy1 - th - 3)
+                        badge_bg = (250, 204, 21) if active else (6, 78, 59)
+                        text_fg = (0, 0, 0) if active else (255, 255, 255)
+                        draw.rectangle([(badge_x - 2, badge_y - 2), (badge_x + tw + 2, badge_y + th + 2)], fill=badge_bg, outline=box_color, width=1)
+                        draw.text((badge_x + 3, badge_y), ch, fill=text_fg, font=font_ov)
 
             self._image = preview_img
             self._draw = draw
