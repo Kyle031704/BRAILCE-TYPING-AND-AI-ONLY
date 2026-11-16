@@ -17,29 +17,29 @@ from typing import Dict, Set
 
 # Surface form (lowercase) -> spoken phonetic replacement for Filipino TTS
 FILIPINO_PRONUNCIATION_LEXICON: Dict[str, str] = {
-    "enter": "enter",
-    "ai": "ei ay",
-    "braille": "breyl",
     "brailce": "breyls",
+    "braille": "breyl",
+    "ai": "ey-ay",
+    "enter": "enter",
+    "space": "ispeys",
+    "backspace": "bak-ispeys",
+    "tab": "tab",
+    "scanner": "iskaner",
+    "mode": "mowd",
+    "usb": "yu-es-bi",
+    "lcd": "el-si-di",
+    "led": "el-i-di",
+    "wifi": "way-fay",
     "grade": "greyd",
-    "type": "pindot",
-    "scanner": "pagbasa ng braille",
-    "scan": "basahin",
-    "mode": "modo",
-    "assistant": "katulong",
-    "math": "matematika",
-    "free input": "malayang paglalagay",
+    "type": "tayp",
     "ok": "okay",
-    "wifi": "wayfay",
-    "usb": "yu es bi",
-    "lcd": "el si di",
-    "led": "el i di",
     "camera": "kamera",
 }
 
 # Approved technical / universal terms permitted in Filipino strings
 APPROVED_FILIPINO_LOANWORDS: Set[str] = {
     "enter", "ai", "braille", "brailce", "grade", "ok", "usb", "lcd", "led",
+    "space", "backspace", "tab", "scanner", "mode", "wifi", "camera",
     "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
 }
 

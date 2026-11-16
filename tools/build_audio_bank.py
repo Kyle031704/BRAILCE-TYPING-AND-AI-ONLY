@@ -51,6 +51,13 @@ from brailce.speech.filipino_engine import (
     TAGALOG_TENS,
     normalize_for_sherpa_filipino,
 )
+from brailce.i18n.fil_keys import (
+    FILIPINO_KEY_LETTERS_ENGLISH,
+    FILIPINO_KEY_DIGITS,
+    FILIPINO_KEY_OPERATORS,
+    FILIPINO_KEY_PUNCTUATION,
+    get_filipino_keystroke_filename,
+)
 from brailce.speech.normalizer import CHARACTER_FILENAME_MAP
 from brailce.speech.piper_engine import PiperEngine
 
@@ -110,17 +117,12 @@ FILIPINO_SIGHT_WORDS: List[str] = [
     "mahal", "pambansang", "bayani", "kabisera", "maynila",
 ]
 
-# Filipino character pronunciations rendered with the SAME Filipino voice
+# Filipino character pronunciations (English terms with natural Filipino accent)
 FILIPINO_CHAR_TEXT: Dict[str, str] = {
-    "A": "ey", "B": "bi", "C": "si", "D": "di", "E": "eh", "F": "ef",
-    "G": "dzi", "H": "eyts", "I": "ay", "J": "dzey", "K": "key", "L": "el",
-    "M": "em", "N": "en", "O": "ow", "P": "pi", "Q": "kyu", "R": "ar",
-    "S": "es", "T": "ti", "U": "yu", "V": "vi", "W": "dobol-yu", "X": "eks",
-    "Y": "way", "Z": "zi",
-    "0": "sero", "1": "isa", "2": "dalawa", "3": "tatlo", "4": "apat",
-    "5": "lima", "6": "anim", "7": "pito", "8": "walo", "9": "siyam",
-    "+": "dagdag", "-": "bawas", "*": "beses", "/": "hatiin sa", "=": "katumbas",
-    ".": "tuldok", ",": "kuwit", "?": "tandang pananong", "!": "tandang padamdam", "#": "tanda ng numero",
+    **FILIPINO_KEY_LETTERS_ENGLISH,
+    **FILIPINO_KEY_DIGITS,
+    **FILIPINO_KEY_OPERATORS,
+    **FILIPINO_KEY_PUNCTUATION,
 }
 
 
@@ -220,9 +222,9 @@ def build_filipino_bank(engine: FilipinoEngine, skip_existing: bool = False) -> 
     if os.path.isfile(switched_en_path):
         standardize_wav_file(switched_en_path, pre_ms=DEFAULT_PRE_SILENCE_MS, post_ms=DEFAULT_POST_SILENCE_MS)
 
-    # 2. 46 Filipino characters/digits/symbols
+    # 2. Filipino characters/digits/symbols
     for ch, spoken in FILIPINO_CHAR_TEXT.items():
-        fname = CHARACTER_FILENAME_MAP.get(ch, f"char_{ch}.wav")
+        fname = get_filipino_keystroke_filename(ch)
         out_path = os.path.join(FIL_DIR, fname)
         if skip_existing and os.path.isfile(out_path) and os.path.getsize(out_path) > 1000:
             continue

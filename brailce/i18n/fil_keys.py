@@ -21,7 +21,7 @@ from typing import Dict, Optional
 
 # Standard English-derived letter names in Tagalog phonetic orthography (clean non-gliding)
 FILIPINO_KEY_LETTERS_ENGLISH: Dict[str, str] = {
-    "A": "ei",
+    "A": "ey",
     "B": "bi",
     "C": "si",
     "D": "di",
@@ -43,7 +43,7 @@ FILIPINO_KEY_LETTERS_ENGLISH: Dict[str, str] = {
     "T": "ti",
     "U": "yu",
     "V": "vi",
-    "W": "dobolyu",
+    "W": "dobol-yu",
     "X": "eks",
     "Y": "way",
     "Z": "zi",
@@ -81,32 +81,36 @@ FILIPINO_KEY_LETTERS_ABAKADA: Dict[str, str] = {
 
 FILIPINO_KEY_DIGITS: Dict[str, str] = {
     "0": "sero",
-    "1": "isa",
-    "2": "dalawa",
-    "3": "tatlo",
-    "4": "apat",
-    "5": "lima",
-    "6": "anim",
-    "7": "pito",
-    "8": "walo",
-    "9": "siyam",
+    "1": "wan",
+    "2": "tu",
+    "3": "tri",
+    "4": "for",
+    "5": "fayv",
+    "6": "siks",
+    "7": "seben",
+    "8": "eyt",
+    "9": "nayn",
 }
 
 FILIPINO_KEY_OPERATORS: Dict[str, str] = {
-    "+": "dagdag",
-    "-": "bawas",
-    "*": "beses",
-    "/": "hatiin",
-    "=": "katumbas",
+    "+": "plas",
+    "-": "maynus",
+    "*": "tayms",
+    "/": "dibayded bay",
+    "=": "ikwals",
 }
 
 FILIPINO_KEY_PUNCTUATION: Dict[str, str] = {
-    ".": "tuldok",
-    ",": "kuwit",
-    "?": "tandang pananong",
-    "!": "tandang padamdam",
+    ".": "piryod",
+    ",": "koma",
+    "?": "kwestyon mark",
+    "!": "eksklameysyon mark",
+    "-": "haypen",
+    "'": "apostropi",
+    ":": "kolon",
+    ";": "semikolon",
     "#": "senyas ng numero",
-    " ": "espasyo",
+    " ": "ispeys",
 }
 
 KEYSTROKE_FILENAME_MAP: Dict[str, str] = {
@@ -119,6 +123,10 @@ KEYSTROKE_FILENAME_MAP: Dict[str, str] = {
     ",": "char_comma.wav",
     "?": "char_question.wav",
     "!": "char_exclamation.wav",
+    "-": "char_hyphen.wav",
+    "'": "char_apostrophe.wav",
+    ":": "char_colon.wav",
+    ";": "char_semicolon.wav",
     "#": "char_hash.wav",
     " ": "char_space.wav",
 }
@@ -181,7 +189,7 @@ def get_all_filipino_keystroke_items(style: str = "english_names") -> Dict[str, 
     for op in ("+", "-", "*", "/", "="):
         items[op] = (get_filipino_keystroke_name(op, style=style), get_filipino_keystroke_filename(op))
     # Punctuation
-    for p in (".", ",", "?", "!", "#"):
+    for p in (".", ",", "?", "!", "-", "'", ":", ";", "#", " "):
         items[p] = (get_filipino_keystroke_name(p, style=style), get_filipino_keystroke_filename(p))
     return items
 

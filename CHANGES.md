@@ -160,5 +160,18 @@ Run these checks directly on the Raspberry Pi 5 hardware after deployment:
   - Implemented high-resolution still capture with Laplacian variance (`cv2.Laplacian(gray, cv2.CV_64F).var()`) selecting the sharpest frame among burst captures.
   - Added CLAHE contrast enhancement fallback in `OBREngine.process_image` for low-contrast embossed paper.
 
+### Filipino Keystrokes, Math Operators, Natural Mode Strings & AI Integration
+- **Root causes:**
+  - Letter names and operators in Filipino mode used English-style phonetic respellings ("ey", "bi", "dobolyu") or Abakada ("a, ba, ka") that sherpa-onnx MMS-TTS read with awkward glides ("eya/heya").
+  - Mode intros and instructions used literal or rigid Tagalog phrases instead of natural conversational Filipino.
+  - AI Assistant prompt lacked strict guidelines on handling loanwords and untranslatable terms naturally.
+- **Fix:**
+  - Updated `brailce/i18n/fil_keys.py` to map letters A-Z, digits 0-9, punctuation marks, and math operators (+, -, *, /, =) to crisp English pronunciations in Tagalog orthography without trailing glides ("ey", "bi", "si", "plas", "maynus", "tayms", "dibayded bay", "ikwals").
+  - Updated `brailce/i18n/fil_lexicon.py` and `brailce/speech/filipino_engine.py` to preserve proper nouns and loanwords ("Braille" -> "breyl", "Brailce" -> "breyls", "AI" -> "ey-ay", "Grade" -> "greyd"), providing cached audio resolution and reverse aliases.
+  - Replaced literal strings in `brailce/i18n/strings.py` with natural Filipino mode intros ("Malayang Paglalagay", "Matematika", "Katulong na AI", "Pagbasa ng Braille").
+  - Updated `FILIPINO_SYSTEM_PROMPT` in `brailce/ai/ollama_client.py` for concise, 1-2 sentence Grade 1 conversational responses.
+  - Verified audio bank consistency and passes full test suite (54/54 tests passing).
+
+
 
 

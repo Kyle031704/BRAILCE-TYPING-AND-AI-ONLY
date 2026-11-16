@@ -81,19 +81,19 @@ STRINGS: Dict[str, Dict[str, str]] = {
     },
     "MODE_INTRO_FREE_INPUT": {
         "en": "Free Input Mode. Type letters and words.",
-        "fil": "Malayang Paglalagay. Maglagay ng mga titik at salita.",
+        "fil": "Malayang Paglalagay. Mag-type ng mga titik at salita.",
     },
     "MODE_INTRO_MATH": {
         "en": "Math Mode. Type numbers and operators.",
-        "fil": "Matematika. Maglagay ng mga numero at operasyon.",
+        "fil": "Matematika. Mag-type ng mga numero at operasyon.",
     },
     "MODE_INTRO_AI": {
         "en": "AI Assistant Mode. Type your question and press Enter.",
-        "fil": "Katulong na AI. I-type ang iyong tanong, tapos pindutin ang Enter.",
+        "fil": "Katulong na AI. I-type ang iyong tanong, pagkatapos ay pindutin ang Enter.",
     },
     "MODE_INTRO_SCANNER": {
         "en": "Scanner Mode. Hold a Braille page and press Enter to scan.",
-        "fil": "Pagbasa ng Braille. Itapat ang pahina sa kamera, tapos pindutin ang Enter.",
+        "fil": "Pagbasa ng Braille. Ilagay ang pahina ng Braille sa tapat ng kamera, pagkatapos ay pindutin ang Enter.",
     },
 
     # ---- Math Mode & Arithmetic Card Labels ----

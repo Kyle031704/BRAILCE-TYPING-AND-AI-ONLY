@@ -187,6 +187,10 @@ FILIPINO_CHAR_FILENAMES = {
     "?": "char_question.wav",
     "!": "char_exclamation.wav",
     "#": "char_hash.wav",
+    "'": "char_apostrophe.wav",
+    ":": "char_colon.wav",
+    ";": "char_semicolon.wav",
+    " ": "char_space.wav",
 }
 
 FILIPINO_MODE_FILENAMES = {
@@ -249,6 +253,23 @@ def get_filipino_word_path(word: str) -> Optional[str]:
         candidates.append(f"word_{slug_hyphen}.wav")
     if slug_plain and slug_plain != slug_hyphen:
         candidates.append(f"word_{slug_plain}.wav")
+
+    # Map phonetic pronunciations to cached word WAVs
+    phonetic_to_word = {
+        "breyl": "braille",
+        "breyls": "brailce",
+        "greyd": "grade",
+        "ey-ay": "ai",
+        "eyay": "ai",
+        "mowd": "mode",
+        "iskaner": "scanner",
+        "ispeys": "space",
+        "bak-ispeys": "backspace",
+        "bakispeys": "backspace",
+    }
+    orig = phonetic_to_word.get(slug_hyphen) or phonetic_to_word.get(slug_plain)
+    if orig:
+        candidates.append(f"word_{orig}.wav")
 
     for fname in candidates:
         wav_path = os.path.join(cache_dir, fname)
