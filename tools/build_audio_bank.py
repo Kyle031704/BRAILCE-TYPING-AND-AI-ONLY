@@ -11,7 +11,9 @@ manifest derived directly from:
 
 Voices:
   - English : Piper en_US-ryan-medium (length_scale=1.05, noise_scale=0.5, noise_w=0.6)
-  - Filipino: Offline sherpa-onnx MMS-TTS tgl VITS (brailce/models/filipino/model.onnx)
+  - Filipino: fil-PH-BlessicaNeural (words, sentences, modes, AI) &
+              en-PH-RosaNeural with carrier slicing (letters, digits, operators, punctuation)
+              [fallback to sherpa-onnx MMS-TTS tgl if offline]
 
 All generated/updated WAV files are standardized via standardize_wav_file():
   22050 Hz, mono (1 ch), 16-bit PCM, active RMS ~4200, 120ms pre / 180ms post silence.
@@ -25,10 +27,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
 import re
+import shutil
 import sys
-from typing import Dict, List, Set
+import wave
+from typing import Dict, List, Optional, Set, Tuple
+
+import numpy as np
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
@@ -41,6 +48,7 @@ from brailce.modes.ai_assistant import FILIPINO_AI_OFFLINE_RESPONSES
 from brailce.speech.audio_normalize import (
     DEFAULT_POST_SILENCE_MS,
     DEFAULT_PRE_SILENCE_MS,
+    slice_carrier_audio,
     standardize_wav_file,
 )
 from brailce.speech.filipino_engine import (
@@ -64,6 +72,9 @@ from brailce.speech.piper_engine import PiperEngine
 EN_CHAR_DIR = os.path.join(PROJECT_ROOT, "brailce", "audio", "characters")
 EN_WORD_DIR = os.path.join(PROJECT_ROOT, "brailce", "audio", "words_en")
 FIL_DIR = os.path.join(PROJECT_ROOT, "brailce", "audio", "filipino")
+
+FILIPINO_BANK_VOICE = "fil-PH-BlessicaNeural"
+FILIPINO_KEYSTROKE_VOICE = "en-PH-RosaNeural"
 
 # Core Grade 1 English sight words + problem words + Dolch/Fry high-frequency vocabulary
 ENGLISH_CORE_WORDS: List[str] = sorted({
@@ -117,12 +128,38 @@ FILIPINO_SIGHT_WORDS: List[str] = [
     "mahal", "pambansang", "bayani", "kabisera", "maynila",
 ]
 
-# Filipino character pronunciations (English terms with natural Filipino accent)
-FILIPINO_CHAR_TEXT: Dict[str, str] = {
-    **FILIPINO_KEY_LETTERS_ENGLISH,
-    **FILIPINO_KEY_DIGITS,
-    **FILIPINO_KEY_OPERATORS,
-    **FILIPINO_KEY_PUNCTUATION,
+# Plain English pronunciation targets for character carrier-slicing
+PLAIN_KEYSTROKE_TARGETS: Dict[str, str] = {
+    # Letters A-Z
+    **{chr(c): chr(c) for c in range(ord("A"), ord("Z") + 1)},
+    # Digits 0-9
+    "0": "zero",
+    "1": "one",
+    "2": "two",
+    "3": "three",
+    "4": "four",
+    "5": "five",
+    "6": "six",
+    "7": "seven",
+    "8": "eight",
+    "9": "nine",
+    # Math Operators
+    "+": "plus",
+    "-": "minus",
+    "*": "times",
+    "/": "divided by",
+    "=": "equals",
+    # Punctuation
+    ".": "period",
+    ",": "comma",
+    "?": "question mark",
+    "!": "exclamation mark",
+    "-": "hyphen",
+    "'": "apostrophe",
+    ":": "colon",
+    ";": "semicolon",
+    "#": "number sign",
+    " ": "space",
 }
 
 
@@ -186,19 +223,105 @@ def collect_filipino_words() -> Set[str]:
         "natitirang", "natira", "una", "pagkatapos", "isahan", "sampuan", "pagsamahin",
         "pangwakas", "malaking", "titik", "hindi", "malinaw", "nakitang", "braille",
         "pindutin", "basahin", "malabo", "larawan", "tuldok", "pahina", "kamera",
+        "grade", "greyd", "breyl", "breyls", "ai",
     })
 
     return {t for t in tokens if len(t) >= 1 and any(c.isalnum() for c in t)}
 
 
-def build_filipino_bank(engine: FilipinoEngine, skip_existing: bool = False) -> int:
-    """Regenerate all Filipino WAVs from the single sherpa-onnx MMS-TTS tgl voice."""
-    os.makedirs(FIL_DIR, exist_ok=True)
-    if engine._get_sherpa_tts() is None:
-        print("ERROR: sherpa_onnx Filipino model not found at brailce/models/filipino/model.onnx", file=sys.stderr)
-        return 1
+async def _synthesize_edge_tts(
+    text: str,
+    voice: str,
+    out_path: str,
+    carrier_slice: bool = False,
+    semaphore: Optional[asyncio.Semaphore] = None,
+) -> bool:
+    """Synthesize text via edge-tts, decode MP3 to PCM via miniaudio, resample to 22050 mono, standardize."""
+    import edge_tts
+    import miniaudio
 
-    count = 0
+    async def _do():
+        for attempt in range(3):
+            try:
+                comm = edge_tts.Communicate(text, voice)
+                data = bytearray()
+                async for chunk in comm.stream():
+                    if chunk["type"] == "audio":
+                        data.extend(chunk["data"])
+                if not data:
+                    await asyncio.sleep(0.5)
+                    continue
+                decoded = miniaudio.mp3_read_s16(bytes(data))
+                samples = np.frombuffer(decoded.samples, dtype=np.int16)
+                if decoded.nchannels == 2:
+                    samples = samples.reshape(-1, 2).mean(axis=1).astype(np.int16)
+                num_samples = int(len(samples) * 22050 / decoded.sample_rate)
+                resampled = np.interp(
+                    np.linspace(0, len(samples), num_samples, endpoint=False),
+                    np.arange(len(samples)),
+                    samples,
+                ).astype(np.int16)
+
+                if carrier_slice:
+                    sliced = slice_carrier_audio(resampled, 22050)
+                    resampled = np.asarray(sliced, dtype=np.int16)
+
+                with wave.open(out_path, "wb") as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(22050)
+                    wf.writeframes(resampled.tobytes())
+
+                standardize_wav_file(out_path)
+                return True
+            except Exception as exc:
+                await asyncio.sleep(0.8 * (attempt + 1))
+        return False
+
+    if semaphore:
+        async with semaphore:
+            return await _do()
+    return await _do()
+
+
+def build_filipino_bank(
+    engine: FilipinoEngine,
+    skip_existing: bool = False,
+    voice_bank: str = FILIPINO_BANK_VOICE,
+    voice_keystroke: str = FILIPINO_KEYSTROKE_VOICE,
+) -> int:
+    """
+    Build the complete Filipino audio bank using:
+    - fil-PH-BlessicaNeural for words, mode intros, sentences, AI offline answers.
+    - en-PH-RosaNeural with carrier-slicing for keystrokes (letters A-Z, 0-9, operators, punctuation).
+    - Falls back to sherpa-onnx if edge-tts is unavailable.
+    """
+    os.makedirs(FIL_DIR, exist_ok=True)
+    
+    # 0. Delete stale sentence_<md5>.wav files from old runs
+    for f in os.listdir(FIL_DIR):
+        if f.startswith("sentence_") and f.endswith(".wav"):
+            try:
+                os.remove(os.path.join(FIL_DIR, f))
+            except Exception:
+                pass
+
+    has_edge_tts = False
+    try:
+        import edge_tts  # noqa: F401
+        import miniaudio  # noqa: F401
+        has_edge_tts = True
+    except ImportError:
+        has_edge_tts = False
+
+    if not has_edge_tts:
+        print("edge-tts / miniaudio not available. Falling back to offline sherpa-onnx synthesis...")
+        return _build_filipino_bank_sherpa(engine, skip_existing)
+
+    print(f"Building Filipino Audio Bank via edge-tts (Bank={voice_bank}, Keys={voice_keystroke})...")
+    sem = asyncio.Semaphore(12)
+    tasks = []
+
     # 1. Fixed phrases / mode intros / announcements
     fixed_files = {
         "mode_free_input.wav": STRINGS["MODE_INTRO_FREE_INPUT"]["fil"],
@@ -212,28 +335,87 @@ def build_filipino_bank(engine: FilipinoEngine, skip_existing: bool = False) -> 
     }
     for fname, phrase in fixed_files.items():
         out_path = os.path.join(FIL_DIR, fname)
-        if skip_existing and os.path.isfile(out_path) and os.path.getsize(out_path) > 1000:
-            continue
-        if engine.synthesize_to_wav(phrase, out_path):
-            count += 1
+        if not (skip_existing and os.path.isfile(out_path) and os.path.getsize(out_path) > 1000):
+            tasks.append(_synthesize_edge_tts(phrase, voice_bank, out_path, semaphore=sem))
 
-    # Handle switched_en.wav cleanly if Piper is absent (preserve/standardize existing)
-    switched_en_path = os.path.join(FIL_DIR, "switched_en.wav")
-    if os.path.isfile(switched_en_path):
-        standardize_wav_file(switched_en_path, pre_ms=DEFAULT_PRE_SILENCE_MS, post_ms=DEFAULT_POST_SILENCE_MS)
+    # Also build AI offline Q&A responses into pre-cached WAVs
+    for q_key, q_resp in FILIPINO_AI_OFFLINE_RESPONSES.items():
+        slug = re.sub(r"[^a-z0-9]", "_", q_key.lower()).strip("_")
+        out_path = os.path.join(FIL_DIR, f"ai_{slug}.wav")
+        if not (skip_existing and os.path.isfile(out_path) and os.path.getsize(out_path) > 1000):
+            tasks.append(_synthesize_edge_tts(q_resp, voice_bank, out_path, semaphore=sem))
 
-    # 2. Filipino characters/digits/symbols
-    for ch, spoken in FILIPINO_CHAR_TEXT.items():
+    # 2. Keystroke character files (letters, digits, math operators, punctuation)
+    for ch, target in PLAIN_KEYSTROKE_TARGETS.items():
         fname = get_filipino_keystroke_filename(ch)
         out_path = os.path.join(FIL_DIR, fname)
-        if skip_existing and os.path.isfile(out_path) and os.path.getsize(out_path) > 1000:
-            continue
-        if engine.synthesize_to_wav(spoken, out_path):
-            count += 1
+        if not (skip_existing and os.path.isfile(out_path) and os.path.getsize(out_path) > 1000):
+            carrier_text = f"Please say: {target}."
+            tasks.append(_synthesize_edge_tts(carrier_text, voice_keystroke, out_path, carrier_slice=True, semaphore=sem))
 
-    # 3. Every Filipino word from manifest
+    # 3. All words from manifest
     words = sorted(collect_filipino_words())
-    print(f"Building {len(words)} Filipino words into {FIL_DIR} (skip_existing={skip_existing})...")
+    print(f"Queueing {len(words)} Filipino word WAVs...")
+    for w in words:
+        slug = re.sub(r"[^a-z0-9\-]", "", w.lower().replace("'", ""))
+        if not slug:
+            continue
+        out_path = os.path.join(FIL_DIR, f"word_{slug}.wav")
+        if not (skip_existing and os.path.isfile(out_path) and os.path.getsize(out_path) > 1000):
+            # Render with a trailing period for natural falling prosody
+            spoken_word = f"{w}."
+            tasks.append(_synthesize_edge_tts(spoken_word, voice_bank, out_path, semaphore=sem))
+
+    async def _run_all():
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        return sum(1 for r in results if r is True)
+
+    generated_count = asyncio.run(_run_all())
+    print(f"Generated/Updated {generated_count} WAVs via edge-tts.")
+
+    # Duplicate uppercase char files to lowercase char files if distinct on filesystem
+    for c in range(ord("A"), ord("Z") + 1):
+        src = os.path.join(FIL_DIR, f"char_{chr(c)}.wav")
+        dst = os.path.join(FIL_DIR, f"char_{chr(c).lower()}.wav")
+        if os.path.isfile(src) and os.path.normcase(src) != os.path.normcase(dst):
+            try:
+                shutil.copy2(src, dst)
+            except shutil.SameFileError:
+                pass
+
+    # Phonetic aliases for code-switched terms
+    aliases = {
+        "word_braille.wav": "word_breyl.wav",
+        "word_brailce.wav": "word_breyls.wav",
+        "word_ai.wav": "word_ey-ay.wav",
+        "word_grade.wav": "word_greyd.wav",
+    }
+    for src_name, dst_name in aliases.items():
+        src_path = os.path.join(FIL_DIR, src_name)
+        dst_path = os.path.join(FIL_DIR, dst_name)
+        if os.path.isfile(src_path) and os.path.normcase(src_path) != os.path.normcase(dst_path):
+            try:
+                shutil.copy2(src_path, dst_path)
+            except shutil.SameFileError:
+                pass
+
+    # Standardize all files in FIL_DIR
+    for fname in sorted(os.listdir(FIL_DIR)):
+        if fname.lower().endswith(".wav"):
+            standardize_wav_file(
+                os.path.join(FIL_DIR, fname),
+                pre_ms=DEFAULT_PRE_SILENCE_MS,
+                post_ms=DEFAULT_POST_SILENCE_MS,
+            )
+
+    print("Filipino audio bank rebuild complete and standardized.")
+    return 0
+
+
+def _build_filipino_bank_sherpa(engine: FilipinoEngine, skip_existing: bool) -> int:
+    """Offline fallback builder using sherpa-onnx MMS-TTS."""
+    count = 0
+    words = sorted(collect_filipino_words())
     for w in words:
         slug = re.sub(r"[^a-z0-9\-]", "", w.lower().replace("'", ""))
         if not slug:
@@ -243,17 +425,6 @@ def build_filipino_bank(engine: FilipinoEngine, skip_existing: bool = False) -> 
             continue
         if engine.synthesize_to_wav(w, out_path):
             count += 1
-
-    # Ensure ALL WAVs in FIL_DIR are standardized (removes any stale unnormalized files)
-    for fname in sorted(os.listdir(FIL_DIR)):
-        if fname.lower().endswith(".wav"):
-            standardize_wav_file(
-                os.path.join(FIL_DIR, fname),
-                pre_ms=DEFAULT_PRE_SILENCE_MS,
-                post_ms=DEFAULT_POST_SILENCE_MS,
-            )
-
-    print(f"Filipino audio bank ready: {count} generated/updated.")
     return 0
 
 
@@ -294,9 +465,9 @@ def build_english_bank(piper: PiperEngine) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build & standardize Brailce audio banks.")
-    parser.add_argument("--filipino-only", action="store_true", help="Regenerate Filipino audio bank via sherpa-onnx")
+    parser.add_argument("--filipino-only", action="store_true", help="Regenerate Filipino audio bank")
     parser.add_argument("--normalize-en-only", action="store_true", help="Normalize existing English WAVs in-place")
-    parser.add_argument("--skip-existing", action="store_true", help="Only synthesize missing Filipino files")
+    parser.add_argument("--skip-existing", action="store_true", help="Only synthesize missing files")
     parser.add_argument("--all", action="store_true", help="Rebuild both Filipino and English banks")
     args = parser.parse_args()
 

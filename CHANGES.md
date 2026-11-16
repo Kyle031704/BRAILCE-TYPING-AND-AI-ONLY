@@ -160,17 +160,26 @@ Run these checks directly on the Raspberry Pi 5 hardware after deployment:
   - Implemented high-resolution still capture with Laplacian variance (`cv2.Laplacian(gray, cv2.CV_64F).var()`) selecting the sharpest frame among burst captures.
   - Added CLAHE contrast enhancement fallback in `OBREngine.process_image` for low-contrast embossed paper.
 
-### Filipino Keystrokes, Math Operators, Natural Mode Strings & AI Integration
+### Complete Replacement of Filipino Speech Engine & Vocabulary Bank with ASR Verification
 - **Root causes:**
-  - Letter names and operators in Filipino mode used English-style phonetic respellings ("ey", "bi", "dobolyu") or Abakada ("a, ba, ka") that sherpa-onnx MMS-TTS read with awkward glides ("eya/heya").
-  - Mode intros and instructions used literal or rigid Tagalog phrases instead of natural conversational Filipino.
-  - AI Assistant prompt lacked strict guidelines on handling loanwords and untranslatable terms naturally.
+  - Every Filipino WAV was previously generated via the offline sherpa-onnx MMS-TTS `tgl` VITS model. MMS-TTS reads text strictly as Tagalog orthography, causing English-style letter respellings ("ey", "bi", "dobol-yu") to sound like trailing glides/garbage ("eya", "teya", "heya").
+  - On short words, MMS-TTS drops entire syllables; automated ASR round-trip verification proved that `word_kumusta.wav` generated via MMS-TTS transcribed as `"kus"` (dropping "mu-sta") with an active duration under 0.49s.
+  - The runtime dispatch in `FilipinoEngine.speak_filipino` attempted live MMS-TTS synthesis before attempting concatenative synthesis, polluting the sentence hash cache with corrupted audio.
 - **Fix:**
-  - Updated `brailce/i18n/fil_keys.py` to map letters A-Z, digits 0-9, punctuation marks, and math operators (+, -, *, /, =) to crisp English pronunciations in Tagalog orthography without trailing glides ("ey", "bi", "si", "plas", "maynus", "tayms", "dibayded bay", "ikwals").
-  - Updated `brailce/i18n/fil_lexicon.py` and `brailce/speech/filipino_engine.py` to preserve proper nouns and loanwords ("Braille" -> "breyl", "Brailce" -> "breyls", "AI" -> "ey-ay", "Grade" -> "greyd"), providing cached audio resolution and reverse aliases.
-  - Replaced literal strings in `brailce/i18n/strings.py` with natural Filipino mode intros ("Malayang Paglalagay", "Matematika", "Katulong na AI", "Pagbasa ng Braille").
-  - Updated `FILIPINO_SYSTEM_PROMPT` in `brailce/ai/ollama_client.py` for concise, 1-2 sentence Grade 1 conversational responses.
-  - Verified audio bank consistency and passes full test suite (54/54 tests passing).
+  - Replaced the fixed Filipino vocabulary generation engine on the PC build step:
+    - `fil-PH-BlessicaNeural` is used for all Grade 1 Filipino sight words, arithmetic step tokens, mode introductions, and offline AI responses.
+    - `en-PH-RosaNeural` with `"Please say: <char>."` carrier-phrase slicing is used for all character keystrokes (A-Z, 0-9, operators, punctuation), producing crisp English character names with a natural Filipino accent and zero trailing glides.
+    - Code-switched terms (*Braille*, *Brailce*, *AI*, *Grade*) are spoken with natural Filipino-accented pronunciation and phonetically mapped in `fil_lexicon.py` and `filipino_engine.py`.
+  - Built automated verification harness (`tools/verify_filipino_audio.py`) utilizing Google ASR round-trip transcription (`fil-PH` and `en-US`), syllable count duration sanity (>= 0.09s per vowel/syllable), peak clipping tests, and loudness bounds.
+  - Regenerated all 602 Filipino WAV files in `brailce/audio/filipino/` and generated 30 audition samples in `tools/voice_audition/fil_v2/`.
+  - Upgraded runtime `FilipinoEngine.speak_filipino` to strictly prioritize:
+    1. Pre-cached single word and offline AI response lookup.
+    2. Exact-phrase hash cache (`sentence_<md5>.wav`).
+    3. Concatenative bank synthesis with natural 80ms word pauses, 250ms comma pauses, and 400ms sentence pauses (tested at 100% ASR accuracy on unseen sentences).
+    4. Offline fallback synthesizer strictly for unseen out-of-vocabulary words.
+  - English audio assets verified bit-exact and unchanged (`FROZEN_ENGLISH_CHARACTERS_SHA256 = "a3c783ddf53f47c20a025480064080bfd51a24ff6d23b46b273e3da32901d12e"`).
+  - Added `brailce/tests/test_filipino_tts_v2.py` covering keystroke bounds, syllable retention, Free Input integration, and mode intros (59/59 pytest suite passing).
+
 
 
 

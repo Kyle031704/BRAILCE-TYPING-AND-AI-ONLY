@@ -651,25 +651,32 @@ class FilipinoEngine:
                 logger.info("FilipinoEngine: Playing cached word '%s' (%s)", words[0], wav_path)
                 return AudioDeviceCoordinator.play_wav_file(wav_path, owner="filipino", timeout=10.0)
 
-        # 2. Hash cache for full sentences / math explanations / AI replies
-        norm_key = normalize_for_sherpa_filipino(trimmed) or trimmed.lower()
-        h = hashlib.md5(norm_key.encode("utf-8")).hexdigest()
         cache_dir = _find_filipino_audio_dir()
         os.makedirs(cache_dir, exist_ok=True)
+        norm_key = normalize_for_sherpa_filipino(trimmed) or trimmed.lower()
+
+        # 2. Check if a pre-cached AI offline answer exists
+        slug_key = re.sub(r"[^a-z0-9]", "_", norm_key).strip("_")
+        ai_path = os.path.join(cache_dir, f"ai_{slug_key}.wav")
+        if os.path.isfile(ai_path) and os.path.getsize(ai_path) > 1000:
+            logger.info("FilipinoEngine: Playing pre-cached AI answer (%s)", ai_path)
+            return AudioDeviceCoordinator.play_wav_file(ai_path, owner="filipino", timeout=30.0)
+
+        # 3. Hash cache for full sentences / math explanations / AI replies
+        h = hashlib.md5(norm_key.encode("utf-8")).hexdigest()
         cached_sentence = os.path.join(cache_dir, f"sentence_{h}.wav")
         if os.path.isfile(cached_sentence) and os.path.getsize(cached_sentence) > 1000:
             logger.info("FilipinoEngine: Playing hash-cached sentence (%s)", cached_sentence)
             return AudioDeviceCoordinator.play_wav_file(cached_sentence, owner="filipino", timeout=30.0)
 
-        # 3. Live offline synthesis via sherpa-onnx MMS-TTS tgl VITS
+        # 4. Word-by-word concatenation of bank WAVs with natural prosody pauses
+        if self._play_offline_concatenated_sentence(trimmed, cached_sentence):
+            return AudioDeviceCoordinator.play_wav_file(cached_sentence, owner="filipino", timeout=30.0)
+
+        # 5. Live offline fallback synthesis via sherpa-onnx MMS-TTS tgl VITS
         if self.synthesize_to_wav(trimmed, cached_sentence):
             if os.path.isfile(cached_sentence) and os.path.getsize(cached_sentence) > 1000:
                 return AudioDeviceCoordinator.play_wav_file(cached_sentence, owner="filipino", timeout=30.0)
-
-        # 4. Offline word-bank concatenation (expand digits/ops first)
-        expanded_words = normalize_for_sherpa_filipino(trimmed).split()
-        if expanded_words and self._play_offline_concatenated(expanded_words):
-            return True
 
         logger.warning("FilipinoEngine: Unable to synthesize offline Filipino speech for %r", trimmed)
         return False
@@ -796,6 +803,95 @@ class FilipinoEngine:
             return False
         except Exception as exc:
             logger.warning("sherpa_onnx generation error for text %r: %s", text, exc)
+            return False
+
+    def _play_offline_concatenated_sentence(self, text: str, out_wav_path: str) -> bool:
+        """
+        Concatenate cached Filipino word WAVs into a single phrase with prosodic phrasing:
+        - Natural 80ms gap between consecutive words.
+        - 250ms prosody pause at comma, semicolon, or colon.
+        - 400ms prosody pause at terminal punctuation (. ! ? \n).
+        - If an individual word is out-of-vocabulary, synthesizes that single word via fallback.
+        """
+        if not text:
+            return False
+
+        tokens = re.split(r"([.!?;:\n,]+)", text)
+        clauses: List[Tuple[str, str]] = []
+        i = 0
+        while i < len(tokens):
+            c = tokens[i].strip()
+            d = tokens[i + 1] if i + 1 < len(tokens) else ""
+            if c:
+                clauses.append((c, d))
+            i += 2
+
+        if not clauses:
+            return False
+
+        framerate = TARGET_SAMPLE_RATE
+        gap_word = b"\x00\x00" * int(framerate * 0.080)
+        gap_comma = b"\x00\x00" * int(framerate * 0.250)
+        gap_period = b"\x00\x00" * int(framerate * 0.400)
+
+        combined_pcm = bytearray()
+        import numpy as np
+
+        for clause, delim in clauses:
+            norm_clause = normalize_for_sherpa_filipino(clause)
+            words = norm_clause.split()
+            for j, w in enumerate(words):
+                cached_wav = get_filipino_word_path(w)
+                pcm_data = None
+                if not cached_wav or not os.path.isfile(cached_wav):
+                    # Out-of-vocabulary fallback: synthesize single word
+                    tmp_word_wav = os.path.join(_find_filipino_audio_dir(), f"word_{w}.wav")
+                    if self.synthesize_to_wav(w, tmp_word_wav) and os.path.isfile(tmp_word_wav):
+                        cached_wav = tmp_word_wav
+
+                if cached_wav and os.path.isfile(cached_wav):
+                    try:
+                        with wave.open(cached_wav, "rb") as wf:
+                            raw_frames = wf.readframes(wf.getnframes())
+                        arr = np.frombuffer(raw_frames, dtype=np.int16)
+                        nz = np.where(np.abs(arr) > 150)[0]
+                        if nz.size > 0:
+                            pad = int(framerate * 0.020)
+                            trimmed = arr[max(0, int(nz[0]) - pad) : min(arr.size, int(nz[-1]) + pad)]
+                            pcm_data = trimmed.tobytes()
+                        else:
+                            pcm_data = raw_frames
+                    except Exception:
+                        pcm_data = None
+
+                if pcm_data:
+                    combined_pcm.extend(pcm_data)
+                    if j < len(words) - 1:
+                        combined_pcm.extend(gap_word)
+
+            if any(c in delim for c in ".?!\n"):
+                combined_pcm.extend(gap_period)
+            elif any(c in delim for c in ",;:"):
+                combined_pcm.extend(gap_comma)
+
+        if not combined_pcm:
+            return False
+
+        try:
+            with wave.open(out_wav_path, "wb") as wf_out:
+                wf_out.setnchannels(1)
+                wf_out.setsampwidth(2)
+                wf_out.setframerate(framerate)
+                wf_out.writeframes(combined_pcm)
+
+            return standardize_wav_file(
+                out_wav_path,
+                target_sr=framerate,
+                pre_ms=DEFAULT_PRE_SILENCE_MS,
+                post_ms=DEFAULT_POST_SILENCE_MS,
+            )
+        except Exception as exc:
+            logger.warning("Error writing concatenated sentence WAV: %s", exc)
             return False
 
     def _play_offline_concatenated(self, words: List[str]) -> bool:

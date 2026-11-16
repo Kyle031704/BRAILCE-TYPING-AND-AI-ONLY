@@ -34,6 +34,8 @@
         "speak_words": true,
         "speak_control_events": false,
         "filipino_voice": "sherpa_mms_tgl",
+        "filipino_bank_voice": "fil-PH-BlessicaNeural",
+        "filipino_keystroke_voice": "en-PH-RosaNeural",
         "filipino_pitch_semitones": 3.5,
         "max_queue_size": 50
     },
