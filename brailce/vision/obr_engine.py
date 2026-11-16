@@ -816,7 +816,7 @@ class OBREngine:
 
             med_pitch = float(np.median(nn_dists))
             pitch_ratio = med_pitch / max(1.0, med_d)
-            if not (1.6 <= pitch_ratio <= 5.5):
+            if not (1.2 <= pitch_ratio <= 6.0):
                 return False
 
             # Grid consistency: at least 40% of dots within +/- 40% of median pitch
