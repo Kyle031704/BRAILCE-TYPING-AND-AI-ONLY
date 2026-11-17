@@ -59,6 +59,10 @@ class SpeechService(SpeechEngine):
         filipino_letter_style: str = "english_names",
         filipino_voice: str = "friendly_prerendered_plus_offline",
         filipino_pitch_semitones: float = 3.5,
+        filipino_word_gap_ms: int = 30,
+        filipino_comma_pause_ms: int = 220,
+        filipino_sentence_pause_ms: int = 380,
+        filipino_char_gap_ms: int = 200,
     ) -> None:
         engine = piper_engine or text_engine or character_engine or PiperEngine(rate=rate, volume=volume)
         self._engine = engine
@@ -74,6 +78,10 @@ class SpeechService(SpeechEngine):
         self._filipino_letter_style = (filipino_letter_style or "english_names").lower()
         self._filipino_voice = (filipino_voice or "friendly_prerendered_plus_offline").lower()
         self._filipino_pitch_semitones = filipino_pitch_semitones
+        self._filipino_word_gap_ms = int(filipino_word_gap_ms)
+        self._filipino_comma_pause_ms = int(filipino_comma_pause_ms)
+        self._filipino_sentence_pause_ms = int(filipino_sentence_pause_ms)
+        self._filipino_char_gap_ms = int(filipino_char_gap_ms)
         self._filipino_engine = None
         self._last_utterance: Optional[Tuple[str, str, Dict[str, Any]]] = None
         self._lock = threading.RLock()
@@ -108,7 +116,14 @@ class SpeechService(SpeechEngine):
     def filipino_engine(self):
         if self._filipino_engine is None:
             from brailce.speech.filipino_engine import FilipinoEngine
-            self._filipino_engine = FilipinoEngine(fallback_speech=self, pitch_semitones=getattr(self, "_filipino_pitch_semitones", 3.5))
+            self._filipino_engine = FilipinoEngine(
+                fallback_speech=self,
+                pitch_semitones=getattr(self, "_filipino_pitch_semitones", 3.5),
+                word_gap_ms=getattr(self, "_filipino_word_gap_ms", 30),
+                comma_pause_ms=getattr(self, "_filipino_comma_pause_ms", 220),
+                sentence_pause_ms=getattr(self, "_filipino_sentence_pause_ms", 380),
+                char_gap_ms=getattr(self, "_filipino_char_gap_ms", 200),
+            )
         return self._filipino_engine
 
     @property
@@ -445,6 +460,10 @@ class SpeechService(SpeechEngine):
         fil_letter_voice = str(speech_cfg.get("filipino_letter_voice", "filipino")).lower()
         fil_voice = str(speech_cfg.get("filipino_voice", "sherpa_mms_tgl")).lower()
         fil_pitch = float(speech_cfg.get("filipino_pitch_semitones", 3.5))
+        fil_word_gap = int(speech_cfg.get("filipino_word_gap_ms", 30))
+        fil_comma_pause = int(speech_cfg.get("filipino_comma_pause_ms", 220))
+        fil_sentence_pause = int(speech_cfg.get("filipino_sentence_pause_ms", 380))
+        fil_char_gap = int(speech_cfg.get("filipino_char_gap_ms", 200))
 
         piper = PiperEngine(
             rate=rate,
@@ -464,4 +483,8 @@ class SpeechService(SpeechEngine):
             filipino_letter_voice=fil_letter_voice,
             filipino_voice=fil_voice,
             filipino_pitch_semitones=fil_pitch,
+            filipino_word_gap_ms=fil_word_gap,
+            filipino_comma_pause_ms=fil_comma_pause,
+            filipino_sentence_pause_ms=fil_sentence_pause,
+            filipino_char_gap_ms=fil_char_gap,
         )

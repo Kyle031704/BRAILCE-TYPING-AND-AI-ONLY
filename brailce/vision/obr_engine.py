@@ -757,24 +757,40 @@ class OBREngine:
             "dot_diameter": dot_diam,
         }
 
-    def detect_braille_presence(self, image: np.ndarray) -> bool:
+    def braille_presence_confidence(self, image: np.ndarray) -> float:
         """
-        Robust presence check (~5-10 Hz on Pi 5) verifying:
-        1. Basic lighting & paper background quality.
-        2. Minimum dot count (>= 4 dots).
-        3. Diameter consistency (variance/std of dot radius <= 0.65 of median).
-        4. Regular nearest-neighbor pitch ratio (1.6 <= pitch/diam <= 5.5).
-        5. Grid regularity: at least 40% of dots share a neighbor within consistent pitch.
+        Fast heuristic confidence score [0.0, 1.0] for Braille page presence.
+
+        Heuristics applied (each contributes independently):
+          1. Image quality gate: brightness p90 > 55, Laplacian var > 4 — returns 0 immediately.
+          2. Minimum 4 dots required — returns 0 immediately.
+          3. Dot-count density gate: rejects frames where dot_count exceeds
+             max(2000, sw*sh/50) — catches random-noise frames with tens of thousands
+             of small blobs while ALLOWING large real Braille pages (1000-1500 dots).
+          4. Dot-diameter consistency: score = max(0, 1 - std_d/med_d / 0.8).
+             Polka-dot grids (perfectly uniform) score high here too, so this alone
+             is not sufficient.
+          5. Pitch-ratio gate: nearest-neighbor median / dot_diameter must be in
+             [1.2, 7.0] — rejects blobs too tightly packed or too sparse.
+          6. Braille-lattice asymmetry: Braille cells have 2 columns × 3 rows, so
+             vertical neighbors appear at ~p and ~2p while horizontal intra-cell
+             neighbors appear only at ~p inside a cell, with an inter-cell gap at
+             ~1.5-2p. A polka-dot grid has 4-way cross neighbors (N, S, E, W) at
+             exactly pitch p. We count the fraction of dots with ≥3 strict 4-way
+             cross neighbors — high values flag polka-dot imposters.
+          7. Grid regularity: fraction of nearest-neighbor distances within ±40%
+             of median pitch. Contributes to final score.
+
+        Returns confidence in [0.0, 1.0]. Caller decides threshold (default 0.60).
         """
         if image is None or cv2 is None or image.size == 0:
-            return False
+            return 0.0
         try:
             ok, _reason, _lap = self.check_image_quality(image)
             if not ok:
-                return False
+                return 0.0
 
             h, w = image.shape[:2]
-            scale = 1.0
             if max(w, h) > 640:
                 scale = 640.0 / float(max(w, h))
                 small = cv2.resize(image, (int(w * scale), int(h * scale)))
@@ -782,52 +798,102 @@ class OBREngine:
                 small = image
 
             dots, dot_diam = self.detect_dots(small)
-            if len(dots) < 4:
-                return False
+            n = len(dots)
+            if n < 4:
+                return 0.0
 
-            # Reject static / noise frames where thousands of spurious dots are found
+            # Gate 3: dot coverage fraction — noise/static fills >10% of frame area with tiny blobs;
+            # real Braille pages never exceed ~8% coverage (dots are sparse on white paper).
+            # Also applies a generous absolute cap for extreme static (>>2000 dots on 320×320).
             sh, sw = small.shape[:2]
-            max_expected_dots = int((sw * sh) / 350.0)
-            if len(dots) > max(120, max_expected_dots):
-                return False
+            frame_area = float(sw * sh)
+            import math as _math
+            dot_coverage = sum(_math.pi * (d["d"] * 0.5) ** 2 for d in dots) / frame_area
+            if dot_coverage > 0.10:
+                logger.debug("detect_braille_presence: dot coverage %.1f%% exceeds 10%% gate", dot_coverage * 100)
+                return 0.0
 
-            # Check dot diameter consistency
             diams = np.array([d["d"] for d in dots], dtype=np.float64)
             med_d = float(np.median(diams))
-            if med_d < 2.5:
-                return False
+            if med_d < 2.0:
+                return 0.0
             std_d = float(np.std(diams))
-            if (std_d / max(1e-3, med_d)) > 0.65:
-                return False
+            diam_cv = std_d / max(1e-3, med_d)
+            # Score 4: diameter consistency (high std → low score)
+            diam_score = float(max(0.0, 1.0 - diam_cv / 0.8))
 
-            # Check nearest-neighbor grid pitch regularity
             pts = np.array([[d["x"], d["y"]] for d in dots], dtype=np.float64)
-            n = len(pts)
+
+            # Subsample to 400 for speed on large images
+            eval_n = min(n, 400)
+            pts_eval = pts[:eval_n]
+
             nn_dists = []
-            for i in range(n):
-                diffs = pts - pts[i]
+            for i in range(eval_n):
+                diffs = pts_eval - pts_eval[i]
                 dists = np.hypot(diffs[:, 0], diffs[:, 1])
                 valid = dists[dists > 3.0]
                 if len(valid):
                     nn_dists.append(float(np.min(valid)))
 
             if len(nn_dists) < 4:
-                return False
+                return 0.0
 
             med_pitch = float(np.median(nn_dists))
             pitch_ratio = med_pitch / max(1.0, med_d)
-            if not (1.2 <= pitch_ratio <= 6.0):
-                return False
+            # Gate 5: pitch-ratio range
+            if not (1.2 <= pitch_ratio <= 7.0):
+                return 0.0
 
-            # Grid consistency: at least 40% of dots within +/- 40% of median pitch
-            regular_count = sum(1 for d in nn_dists if 0.60 * med_pitch <= d <= 1.40 * med_pitch)
-            if (regular_count / len(nn_dists)) < 0.40:
-                return False
+            # Score 7: grid regularity (fraction within ±40% of median pitch)
+            regular = sum(1 for d in nn_dists if 0.60 * med_pitch <= d <= 1.40 * med_pitch)
+            regularity_score = regular / max(1, len(nn_dists))
 
-            return True
+            # Score 6: polka-dot cross-neighbor penalty
+            # A polka-dot / regular grid has N, S, E, W neighbors all at exactly pitch p.
+            # Braille never has E neighbour at pitch p (the inter-column gap is 1.5-2p).
+            tol = 0.30 * med_pitch
+            cross_count = 0
+            for i in range(eval_n):
+                diffs = pts_eval - pts_eval[i]
+                dx = diffs[:, 0]
+                dy = diffs[:, 1]
+                has_e = bool(np.any((np.abs(dx - med_pitch) < tol) & (np.abs(dy) < tol)))
+                has_w = bool(np.any((np.abs(dx + med_pitch) < tol) & (np.abs(dy) < tol)))
+                has_n = bool(np.any((np.abs(dy - med_pitch) < tol) & (np.abs(dx) < tol)))
+                has_s = bool(np.any((np.abs(dy + med_pitch) < tol) & (np.abs(dx) < tol)))
+                if has_e and has_w and has_n and has_s:
+                    cross_count += 1
+            cross_ratio = cross_count / max(1, eval_n)
+            # Polka dots: cross_ratio ~0.5-0.9; Braille: ~0.0
+            polka_penalty = float(min(1.0, cross_ratio * 2.0))
+
+            # Weighted confidence
+            conf = (
+                0.25 * diam_score
+                + 0.50 * regularity_score
+                + 0.25 * max(0.0, 1.0 - polka_penalty)
+            )
+            # Soft-gate: if regularity < 35% the detection is very weak regardless
+            if regularity_score < 0.35:
+                conf *= regularity_score / 0.35
+
+            logger.debug(
+                "braille_presence_confidence: n=%d diam_cv=%.2f pitch_ratio=%.1f "
+                "regularity=%.2f cross_ratio=%.2f → conf=%.2f",
+                n, diam_cv, pitch_ratio, regularity_score, cross_ratio, conf,
+            )
+            return float(min(1.0, max(0.0, conf)))
         except Exception as exc:
-            logger.debug("detect_braille_presence error: %s", exc)
-            return False
+            logger.debug("braille_presence_confidence error: %s", exc)
+            return 0.0
+
+    def detect_braille_presence(self, image: np.ndarray, confidence_threshold: float = 0.60) -> bool:
+        """
+        Returns True when braille_presence_confidence() >= confidence_threshold (default 0.60).
+        Backward-compatible bool interface used by ScannerMode detection worker.
+        """
+        return self.braille_presence_confidence(image) >= confidence_threshold
 
     def process_image(self, image: np.ndarray) -> Dict[str, Any]:
         """

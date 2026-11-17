@@ -184,3 +184,21 @@ Run these checks directly on the Raspberry Pi 5 hardware after deployment:
 
 
 
+
+---
+
+### Section A — Filipino Speech Pacing, Enunciation, Clarity & Pause Controls (2026-11-17)
+- **Root causes:** 74 missing English function-word WAVs; Filipino clips muffled (centroid ~1300-1500 Hz vs English ~2470 Hz; HF ratio <3.6% vs 16.8%; RMS ~3300 vs ~4200). No configurable pacing.
+- **Fix:** Synthesized 74 missing words with `fil-PH-BlessicaNeural` at `-5%` rate; re-rendered 806 Filipino WAVs with 80 Hz high-pass + +3 dB high-shelf + RMS ~4400 normalization. Added `filipino_word_gap_ms` (30ms), `filipino_comma_pause_ms` (220ms), `filipino_sentence_pause_ms` (380ms), `filipino_char_gap_ms` (200ms) to config and wired into `FilipinoEngine` and `ScannerMode`. `SpeechService.from_config()` passes all pause params to `FilipinoEngine`.
+
+### Section B — Scanner Mode: Confidence Threshold 0.60 & False-Positive Rejection (2026-11-17)
+- **Root causes:** `detect_braille_presence()` returned a plain bool; arbitrary dot-count cap (`max(120, sw*sh/350)`) rejected real Braille books with >120 dots; random noise passed all prior checks; docs falsely claimed YOLOv8 is the main engine.
+- **Fix:**
+  - Added `OBREngine.braille_presence_confidence(image) -> float [0,1]` using: dot-coverage-fraction gate (<10%), diameter consistency score, grid regularity score, polka-dot cross-neighbor penalty.
+  - Removed the arbitrary dot-count cap. Real Braille pages with 1000+ dots now pass.
+  - `detect_braille_presence(image, confidence_threshold=0.60) -> bool` delegates to the confidence function.
+  - `ScannerMode._detection_worker` reads `vision.confidence_threshold` from config and calls `braille_presence_confidence()`.
+  - `vision.confidence_threshold` = 0.60 in `config.json` and `defaults.py`.
+  - Corrected `HARDWARE_AND_FUNCTIONS.md`: YOLOv8 optional/disabled; Piper + Blessica WAV bank is actual TTS runtime.
+  - Created `SCANNER_AUDIT.md` with full factual software inventory.
+  - Measured: noise conf=0.0, enhanced_braille.jpg conf=0.638. 31/31 tests pass.

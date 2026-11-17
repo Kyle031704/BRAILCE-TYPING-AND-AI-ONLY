@@ -12,13 +12,13 @@ The Brailce device is built around a dedicated single-board computer architectur
 
 | Component | Model / Specification | Purpose & Function |
 | :--- | :--- | :--- |
-| **Main Compute Unit** | **Raspberry Pi 5** (4GB / 8GB RAM) | Central processing unit. Powers the Linux OS, executes the Python 3 application pipeline, hosts the local Ollama LLM server, and runs the YOLOv8 Optical Braille Recognition model. |
+| **Main Compute Unit** | **Raspberry Pi 5** (4GB / 8GB RAM) | Central processing unit. Powers the Linux OS, executes the Python 3 application pipeline, hosts the local Ollama LLM server, and runs the classical OpenCV dot-grid Optical Braille Recognition engine. *(YOLOv8 is an optional secondary path, disabled by default.)* |
 | **Tactile Keypad** | **Dedicated Character Keypad with Embossed Braille Keycaps** | Primary physical input. Each key possesses an embossed 6-dot Braille cell label representing an English letter ($A\text{–}Z$), digit ($0\text{–}9$), punctuation mark, math operator, or control key. Connected via Raspberry Pi GPIO pins or I2C GPIO expander (e.g., MCP23017). *(Simulated via keyboard during development).* |
 | **Camera Module** | **Raspberry Pi Camera Module (v2 / v3)** or standard UVC USB Camera | Captures high-resolution images of physical embossed Braille sheets, flashcards, and printed textbooks for real-time Optical Braille Recognition. |
 | **Visual Display** | **3.5-inch TFT LCD Display** (480×320, SPI, **ILI9488**) | Serves sighted instructors, SPED teachers, and evaluators. Displays the active mode, real-time Braille cell graphics (dot matrix), text buffer, and system alerts. *(Simulated via ConsoleDisplay during development).* |
-| **Audio Output** | **Mini Speaker / 3.5mm Audio Output / I2S DAC Amplifier** (e.g., MAX98357A) | Provides immediate, non-overlapping voice feedback via **eSpeak NG** Text-to-Speech (TTS) for individual key presses, completed words, scanned pages, and AI responses. |
+| **Audio Output** | **Mini Speaker / 3.5mm Audio Output / I2S DAC Amplifier** (e.g., MAX98357A) | Provides immediate, non-overlapping voice feedback via **Piper Neural TTS** (English, en_US-ryan-medium) and **pre-rendered `fil-PH-BlessicaNeural` WAV bank** (Filipino) for individual key presses, completed words, scanned pages, and AI responses. *(eSpeak NG is not used.)* |
 | **Power System** | **5V / 5A USB-C Battery Pack / Power Bank** or LiPo UPS Power HAT | Delivers portable, rechargeable, cord-free power for continuous classroom use. |
-| **Storage** | **MicroSD Card (64GB+ Class 10 / A2 High Speed)** | Houses the operating system, TTS phonetic dictionaries, Ollama model weights (`LiquidAI`), and the YOLOv8 model file (`yolov8_braille.pt`). |
+| **Storage** | **MicroSD Card (64GB+ Class 10 / A2 High Speed)** | Houses the operating system, Piper TTS model (`en_US-ryan-medium.onnx`), pre-rendered Filipino WAV bank, and Ollama model weights (`LiquidAI`). *(The YOLOv8 model file `yolov8_braille.pt` is optional and not downloaded at runtime.)* |
 
 ---
 
@@ -161,8 +161,8 @@ Brailce operates across four distinct modes, toggled cyclically using the physic
 * **Internal Process:** Captures the current image frame and feeds it into the OBR deep learning pipeline.
 * **Output:** Speaks *"Scanning document"* and displays *"Scanning document with AI..."* on the screen.
 
-#### Function 15: Real-Time Braille Cell Detection (OBR YOLOv8 Engine)
-* **Internal Process:** The local YOLOv8 neural network (`yolov8_braille.pt`) detects bounding boxes of physical 6-dot Braille cells and classifies each cell into a 6-bit binary pattern.
+#### Function 15: Real-Time Braille Cell Detection (Classical OpenCV Dot-Grid Engine)
+* **Internal Process:** The classical `OBREngine` uses multi-scale Difference-of-Gaussians (DoG) to detect embossed Braille dots, then assigns dots to 2×3 Braille cells using grid-fitting and decodes each cell's 6-bit binary pattern to a character. Confidence score [0.0–1.0] is computed; cells with confidence < 0.60 are not decoded. *(YOLOv8 `yolov8_braille.pt` is an optional secondary path, disabled by default.)*
 
 #### Function 16: Spatial Layout & Line Reconstruction
 * **Internal Process:** 

@@ -82,6 +82,24 @@ class ScannerMode(BaseMode):
             return bool(cfg.get("vision", "announce_capital_sign", default=False))
         return False
 
+    def _get_char_pace_s(self) -> float:
+        if self._lang() == "fil":
+            cfg = getattr(self.app, "config", None)
+            if cfg and hasattr(cfg, "get"):
+                gap_ms = cfg.get("speech", "filipino_char_gap_ms", default=None)
+                if gap_ms is not None:
+                    return float(gap_ms) / 1000.0
+        return self.CHAR_PACE_S
+
+    def _get_word_pause_s(self) -> float:
+        if self._lang() == "fil":
+            cfg = getattr(self.app, "config", None)
+            if cfg and hasattr(cfg, "get"):
+                gap_ms = cfg.get("speech", "filipino_word_gap_ms", default=None)
+                if gap_ms is not None:
+                    return max(0.05, float(gap_ms) / 1000.0)
+        return self.WORD_PAUSE_S
+
     def _stop_readout(self, announce_stopped: bool = False) -> None:
         """Stop active letter-by-letter/word-by-word readout immediately."""
         was_reading = self._is_reading
@@ -143,7 +161,9 @@ class ScannerMode(BaseMode):
     def _detection_worker(self) -> None:
         """
         Cheap classical Braille presence monitor (~3-4 Hz) with hysteresis + cooldown.
-        Speaks SCANNER_BRAILLE_DETECTED once per sheet placement without nagging.
+        Uses braille_presence_confidence() >= confidence_threshold (default 0.60) so
+        polka-dot grids, text pages, and noise are rejected before triggering the
+        "Braille detected" announcement.
         """
         pos_streak = 0
         neg_streak = 0
@@ -161,7 +181,23 @@ class ScannerMode(BaseMode):
                     time.sleep(self.PRESENCE_POLL_S)
                     continue
 
-                detected = bool(self.app.obr.detect_braille_presence(frame))
+                # Read confidence threshold from config (default 0.60)
+                cfg = getattr(self.app, "config", None)
+                conf_threshold = 0.60
+                if cfg and hasattr(cfg, "get"):
+                    try:
+                        conf_threshold = float(cfg.get("vision", "confidence_threshold", default=0.60))
+                    except Exception:
+                        pass
+
+                obr = self.app.obr
+                if hasattr(obr, "braille_presence_confidence"):
+                    conf = obr.braille_presence_confidence(frame)
+                    detected = conf >= conf_threshold
+                    logger.debug("Braille presence confidence=%.2f threshold=%.2f detected=%s", conf, conf_threshold, detected)
+                else:
+                    detected = bool(obr.detect_braille_presence(frame))
+
                 if detected:
                     pos_streak += 1
                     neg_streak = 0
@@ -395,7 +431,7 @@ class ScannerMode(BaseMode):
                     self._speak_completed_word(cur_word, cur_has_unknown)
                     cur_word = []
                     cur_has_unknown = False
-                    pause = self.LINE_PAUSE_S if (prev_line_idx is not None and line_idx != prev_line_idx) else self.WORD_PAUSE_S
+                    pause = self.LINE_PAUSE_S if (prev_line_idx is not None and line_idx != prev_line_idx) else self._get_word_pause_s()
                     if self._stop_readout_event.wait(pause):
                         return
 
@@ -409,7 +445,7 @@ class ScannerMode(BaseMode):
                 if kind == "indicator":
                     if ch == "^" and announce_cap and speech:
                         speech.speak_text(get_string("SCANNER_CAPITAL", lang), interrupt=False)
-                        if self._stop_readout_event.wait(self.CHAR_PACE_S):
+                        if self._stop_readout_event.wait(self._get_char_pace_s()):
                             return
                     continue
 
@@ -436,7 +472,7 @@ class ScannerMode(BaseMode):
                     if speech:
                         speech.speak_character(ch)
 
-                if self._stop_readout_event.wait(self.CHAR_PACE_S):
+                if self._stop_readout_event.wait(self._get_char_pace_s()):
                     return
 
             if cur_word and not self._stop_readout_event.is_set():

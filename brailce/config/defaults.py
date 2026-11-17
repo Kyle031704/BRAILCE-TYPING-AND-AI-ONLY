@@ -80,6 +80,16 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "filipino_voice": "friendly_prerendered_plus_offline",
         # Filipino speech rate multiplier
         "filipino_speed": 1.0,
+        # Filipino synthesis rate setting for edge-tts build
+        "filipino_rate": "-5%",
+        # Inter-word gap inside a clause for offline concatenation (ms)
+        "filipino_word_gap_ms": 30,
+        # Clause pause at comma / colon / semicolon (ms)
+        "filipino_comma_pause_ms": 220,
+        # Sentence pause at period / exclamation / question mark (ms)
+        "filipino_sentence_pause_ms": 380,
+        # Inter-character pause during spell-out in Scanner and Free Input (ms)
+        "filipino_char_gap_ms": 200,
         # Maximum speech queue size before dropping events
         "max_queue_size": 50,
     },
@@ -147,7 +157,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "resolution": [1280, 720],
         "still_resolution": [1920, 1080],
         "model_path": "brailce/vision/yolov8_braille.pt",
-        "confidence_threshold": 0.22,
+        "confidence_threshold": 0.60,
         "iou_threshold": 0.45,
         "use_yolo_secondary": False,
         "announce_capital_sign": False,

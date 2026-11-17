@@ -36,6 +36,11 @@
         "filipino_voice": "sherpa_mms_tgl",
         "filipino_bank_voice": "fil-PH-BlessicaNeural",
         "filipino_keystroke_voice": "en-PH-RosaNeural",
+        "filipino_rate": "-5%",
+        "filipino_word_gap_ms": 30,
+        "filipino_comma_pause_ms": 220,
+        "filipino_sentence_pause_ms": 380,
+        "filipino_char_gap_ms": 200,
         "filipino_pitch_semitones": 3.5,
         "max_queue_size": 50
     },
@@ -83,7 +88,7 @@
         "usb_device": 0,
         "autofocus": true,
         "model_path": "brailce/vision/yolov8_braille.pt",
-        "confidence_threshold": 0.16,
+        "confidence_threshold": 0.60,
         "iou_threshold": 0.45,
         "test_image_path": ""
     }

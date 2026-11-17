@@ -532,10 +532,18 @@ class FilipinoEngine:
         fallback_speech: Optional[SpeechEngine] = None,
         max_queue_size: int = 50,
         pitch_semitones: float = 3.5,
+        word_gap_ms: int = 30,
+        comma_pause_ms: int = 220,
+        sentence_pause_ms: int = 380,
+        char_gap_ms: int = 200,
     ) -> None:
         self.fallback_speech = fallback_speech
         self.letter_style = "english_names"
         self.pitch_semitones = pitch_semitones
+        self.word_gap_ms = int(word_gap_ms)
+        self.comma_pause_ms = int(comma_pause_ms)
+        self.sentence_pause_ms = int(sentence_pause_ms)
+        self.char_gap_ms = int(char_gap_ms)
         self._sherpa_tts = None
         self._sherpa_initialized = False
         self._queue: queue.Queue[Optional[Tuple[str, Any]]] = queue.Queue(maxsize=max_queue_size)
@@ -856,12 +864,16 @@ class FilipinoEngine:
             return False
 
         framerate = TARGET_SAMPLE_RATE
-        gap_word = b"\x00\x00" * int(framerate * 0.015)
-        gap_comma = b"\x00\x00" * int(framerate * 0.150)
-        gap_period = b"\x00\x00" * int(framerate * 0.250)
+        gap_word = b"\x00\x00" * int(framerate * (max(5, getattr(self, "word_gap_ms", 30)) / 1000.0))
+        gap_comma = b"\x00\x00" * int(framerate * (max(50, getattr(self, "comma_pause_ms", 220)) / 1000.0))
+        gap_period = b"\x00\x00" * int(framerate * (max(100, getattr(self, "sentence_pause_ms", 380)) / 1000.0))
 
         combined_pcm = bytearray()
         import numpy as np
+
+        fade_len = int(framerate * 0.010)  # 10ms smooth cosine edge fade
+        fade_in = 0.5 * (1.0 - np.cos(np.linspace(0, np.pi, fade_len))) if fade_len > 1 else None
+        fade_out = 0.5 * (1.0 + np.cos(np.linspace(0, np.pi, fade_len))) if fade_len > 1 else None
 
         for clause, delim in clauses:
             norm_clause = normalize_for_sherpa_filipino(clause)
@@ -879,11 +891,14 @@ class FilipinoEngine:
                     try:
                         with wave.open(cached_wav, "rb") as wf:
                             raw_frames = wf.readframes(wf.getnframes())
-                        arr = np.frombuffer(raw_frames, dtype=np.int16)
+                        arr = np.frombuffer(raw_frames, dtype=np.int16).copy()
                         nz = np.where(np.abs(arr) > 150)[0]
                         if nz.size > 0:
-                            pad = int(framerate * 0.020)
+                            pad = int(framerate * 0.015)
                             trimmed = arr[max(0, int(nz[0]) - pad) : min(arr.size, int(nz[-1]) + pad)]
+                            if fade_len > 1 and len(trimmed) > (2 * fade_len):
+                                trimmed[:fade_len] = (trimmed[:fade_len].astype(np.float64) * fade_in).astype(np.int16)
+                                trimmed[-fade_len:] = (trimmed[-fade_len:].astype(np.float64) * fade_out).astype(np.int16)
                             pcm_data = trimmed.tobytes()
                         else:
                             pcm_data = raw_frames
