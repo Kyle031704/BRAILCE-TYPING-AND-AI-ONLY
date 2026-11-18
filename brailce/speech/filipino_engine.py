@@ -531,7 +531,7 @@ class FilipinoEngine:
         self,
         fallback_speech: Optional[SpeechEngine] = None,
         max_queue_size: int = 50,
-        pitch_semitones: float = 3.5,
+        pitch_semitones: float = 5.5,
         word_gap_ms: int = 30,
         comma_pause_ms: int = 220,
         sentence_pause_ms: int = 380,
@@ -701,16 +701,18 @@ class FilipinoEngine:
                 logger.info("FilipinoEngine: Playing hash-cached sentence (%s)", cached_sentence)
                 return AudioDeviceCoordinator.play_wav_file(cached_sentence, owner="filipino", timeout=30.0)
 
-        # 5. Live whole-sentence offline synthesis (prefer single utterance over choppy concatenation)
+        # 5. Seamless word concatenation with pre-rendered female Blessica bank words
+        #    Prioritized to ensure the natural Filipina Blessica voice is always heard.
         h_main = hashlib.md5(norm_key.encode("utf-8")).hexdigest()
         target_wav = os.path.join(cache_dir, f"sentence_{h_main}.wav")
-        if self.synthesize_to_wav(trimmed, target_wav):
+        if self._play_offline_concatenated_sentence(trimmed, target_wav):
             if os.path.isfile(target_wav) and os.path.getsize(target_wav) > 1000:
                 return AudioDeviceCoordinator.play_wav_file(target_wav, owner="filipino", timeout=30.0)
 
-        # 6. Fallback: seamless word concatenation with tight 15ms crossfades (not choppy 80ms)
-        if self._play_offline_concatenated_sentence(trimmed, target_wav):
-            return AudioDeviceCoordinator.play_wav_file(target_wav, owner="filipino", timeout=30.0)
+        # 6. Fallback: Live whole-sentence offline synthesis via sherpa-onnx with pitch shift (female range F0 >= 190Hz)
+        if self.synthesize_to_wav(trimmed, target_wav):
+            if os.path.isfile(target_wav) and os.path.getsize(target_wav) > 1000:
+                return AudioDeviceCoordinator.play_wav_file(target_wav, owner="filipino", timeout=30.0)
 
         logger.warning("FilipinoEngine: Unable to synthesize offline Filipino speech for %r", trimmed)
         return False
