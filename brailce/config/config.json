@@ -84,7 +84,7 @@
     },
     
     "vision": {
-        "driver": "usb",
+        "driver": "auto",
         "usb_device": 0,
         "autofocus": true,
         "model_path": "brailce/vision/yolov8_braille.pt",

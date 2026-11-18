@@ -177,11 +177,7 @@ class BrailceApp:
             self.camera = SimulatedCamera(image_path=test_image if test_image else None)
         elif vision_driver == "picamera":
             self.camera = PiCameraDevice()
-        elif vision_driver == "usb":
-            self.camera = UsbWebcamDevice(device=usb_device, autofocus=autofocus, focus_value=focus_value)
-            if not self.camera.is_available() and test_image and os.path.isfile(test_image):
-                self.camera = SimulatedCamera(image_path=test_image)
-        else:  # auto
+        else:  # "usb" or "auto"
             usb_cam = UsbWebcamDevice(device=usb_device, autofocus=autofocus, focus_value=focus_value)
             if usb_cam.is_available():
                 self.camera = usb_cam

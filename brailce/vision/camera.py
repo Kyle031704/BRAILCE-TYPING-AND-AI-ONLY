@@ -306,21 +306,35 @@ class UsbWebcamDevice(CameraDevice):
 
     @staticmethod
     def probe_device_candidates() -> list[Any]:
-        """Discover candidate webcam device nodes or indices."""
+        """Discover candidate webcam device nodes or indices (excluding Pi hardware ISP nodes)."""
         candidates = []
         env_dev = os.environ.get("BRAILCE_CAMERA_DEVICE")
         if env_dev is not None:
             candidates.append(int(env_dev) if env_dev.isdigit() else env_dev)
 
-        # Linux V4L2 device nodes
+        # Linux V4L2 device nodes: symlinks in /dev/v4l/by-id are always real USB cameras
         import glob
         by_id = sorted(glob.glob("/dev/v4l/by-id/*"))
         candidates.extend(by_id)
-        video_nodes = sorted(glob.glob("/dev/video*"))
-        candidates.extend(video_nodes)
 
-        # Fallback numeric indices
-        for idx in (0, 1, 2, 4, 6):
+        # Only check low-index video nodes (0 to 4).
+        # /dev/video10 through /dev/video31 on Raspberry Pi 5 are kernel ISP/codec queues, NOT webcams.
+        for idx in range(5):
+            node = f"/dev/video{idx}"
+            if os.path.exists(node):
+                name_file = f"/sys/class/video4linux/video{idx}/name"
+                if os.path.isfile(name_file):
+                    try:
+                        with open(name_file, "r") as f:
+                            dname = f.read().lower()
+                        if any(k in dname for k in ("isp", "codec", "meta", "cfe", "pisp")):
+                            continue
+                    except Exception:
+                        pass
+                candidates.append(node)
+
+        # Fallback numeric indices (only 0, 1, 2)
+        for idx in (0, 1, 2):
             if idx not in candidates:
                 candidates.append(idx)
         return candidates
@@ -329,12 +343,21 @@ class UsbWebcamDevice(CameraDevice):
         if cv2 is None:
             return None
         target = int(dev) if str(dev).isdigit() else str(dev)
-        
+
+        # Skip any high-index /dev/video nodes (Pi 5 ISP/codec hardware queues)
+        if isinstance(target, str) and target.startswith("/dev/video"):
+            try:
+                num = int(target.replace("/dev/video", ""))
+                if num >= 10:
+                    return None
+            except ValueError:
+                pass
+
         # Multiple backends depending on platform
         if os.name == "nt":
-            backends = [getattr(cv2, "CAP_DSHOW", 700), getattr(cv2, "CAP_MSMF", 1400), cv2.CAP_ANY]
+            backends = [getattr(cv2, "CAP_DSHOW", 700), cv2.CAP_ANY]
         else:
-            backends = [getattr(cv2, "CAP_V4L2", 200), cv2.CAP_ANY]
+            backends = [getattr(cv2, "CAP_V4L2", 200)]
 
         for backend in backends:
             cap = None
@@ -348,34 +371,25 @@ class UsbWebcamDevice(CameraDevice):
                             pass
                     continue
 
-                # Warm-up loop: discard initial frames / wait up to ~2s for valid exposed frame
+                # Quick probe: test up to 5 frames with 0.35s max timeout
                 start_time = time.time()
                 valid = False
-                for _ in range(30):
+                for _ in range(5):
                     ret, test_frame = cap.read()
                     if ret and test_frame is not None and test_frame.size > 0:
                         m = float(np.mean(test_frame))
                         s = float(np.std(test_frame))
-                        # Once sensor auto-exposes above dark noise floor
                         if m > 1.0 and s > 0.5:
                             valid = True
                             break
-                    time.sleep(0.06)
-                    if time.time() - start_time > 2.0:
+                    time.sleep(0.04)
+                    if time.time() - start_time > 0.35:
                         break
 
                 if valid:
-                    backend_name = "V4L2" if backend == getattr(cv2, "CAP_V4L2", -1) else (
-                        "DSHOW" if backend == getattr(cv2, "CAP_DSHOW", -1) else (
-                            "MSMF" if backend == getattr(cv2, "CAP_MSMF", -1) else str(backend)
-                        )
-                    )
                     act_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                     act_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    logger.info(
-                        "UsbWebcamDevice: Opened device %s via backend %s (%dx%d, warm-up OK)",
-                        target, backend_name, act_w, act_h
-                    )
+                    logger.info("UsbWebcamDevice: Opened device %s (%dx%d, warm-up OK)", target, act_w, act_h)
                     return cap
 
                 cap.release()
