@@ -4,7 +4,10 @@
 - [x] Step 0: Working Folder & Branch Setup (BRAILCE ADJUST FOLDER, master branch verified)
 - [x] Phase A: Filipino Letters (Respelling, consistent intonation, Blessica/Rosa carrier probe, char_O fix, ASR/F0 metrics, audition)
   - Measured: 26 letters standardized with active duration 0.31s-0.64s, median F0 ~170-190Hz, lead silence 15ms, tail 80ms. char_O fixed (voiced oh, F0 334Hz, ASR 'Oh.'). Tools generated: tools/letter_probe.py, tools/probe_results.json, tools/voice_audition/fil_letters/ (alphabet.wav, index.html).
-- [ ] Phase B: Filipino Digits, Math Operators, Punctuation Names (tuldok, kuwit, tandang pananong, tandang padamdam; Blessica; consistent intonation)
+- [x] Phase B: Filipino Digits, Math Operators, Punctuation Names (tuldok, kuwit, tandang pananong, tandang padamdam; Blessica; consistent intonation)
+  - Punctuation updated to Filipino terms (tuldok, kuwit, tandang pananong, tandang padamdam) rendered with Blessica.
+  - Digits 0-9 and operators (+,-,*,/,=) normalized to 15ms lead / 80ms tail, RMS ~4000. Outlier char_6 re-rendered cleanly.
+  - Added brailce/tests/test_filipino_keystrokes.py: 46/46 passed (existence, duration bounds, RMS, zero MMS fallback).
 - [ ] Phase C: Eliminate Deep Male Voice in Math & AI Assistant Echo (Tagalog numbers to 9999 + arithmetic phrases, F0 audit)
 - [ ] Phase D: Filipino Mode Intros ("AI Mode") & Scanner Mode Speech (Whole-phrase clips, gap audit)
 - [ ] Phase E: English Fixes (V vs B, digits 2 & 7, math/AI juncture, latency/silence trim, remove "Thinking, please wait.")

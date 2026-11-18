@@ -149,11 +149,11 @@ PLAIN_KEYSTROKE_TARGETS: Dict[str, str] = {
     "*": "times",
     "/": "divided by",
     "=": "equals",
-    # Punctuation
-    ".": "period",
-    ",": "comma",
-    "?": "question mark",
-    "!": "exclamation mark",
+    # Punctuation (Filipino terms spoken by Filipina bank voice Blessica)
+    ".": "tuldok",
+    ",": "kuwit",
+    "?": "tandang pananong",
+    "!": "tandang padamdam",
     "-": "hyphen",
     "'": "apostrophe",
     ":": "colon",

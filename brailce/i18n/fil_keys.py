@@ -101,10 +101,10 @@ FILIPINO_KEY_OPERATORS: Dict[str, str] = {
 }
 
 FILIPINO_KEY_PUNCTUATION: Dict[str, str] = {
-    ".": "piryod",
-    ",": "koma",
-    "?": "kwestyon mark",
-    "!": "eksklameysyon mark",
+    ".": "tuldok",
+    ",": "kuwit",
+    "?": "tandang pananong",
+    "!": "tandang padamdam",
     "-": "haypen",
     "'": "apostropi",
     ":": "kolon",
